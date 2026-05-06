@@ -222,6 +222,8 @@ function filterPresets() {
   renderPresets(filtered);
 }
 
+let crushBase = null;
+
 function buildAdjustPanel() {
   const items = [
     { key:'brightness', label:'Brightness', min:-100, max:100 },
@@ -238,7 +240,7 @@ function buildAdjustPanel() {
     { key:'vignette', label:'Vignette', min:0, max:100 },
     { key:'grain', label:'Grain', min:0, max:100 },
     { key:'fade', label:'Fade', min:0, max:100 },
-    { key:'pixelCrush', label:'Pixel Crush', min:0, max:90 },
+    { key:'pixelCrush', label:'Pixel Crush', min:0, max:95 },
   ];
   adjustSliders.innerHTML = items.map(it => `
     <div class="adjust-item">
@@ -250,13 +252,25 @@ function buildAdjustPanel() {
       <input type="range" min="${it.min}" max="${it.max}" value="0" data-adj="${it.key}" />
     </div>
   `).join('');
+
+  adjustSliders.addEventListener('mousedown', e => {
+    const key = e.target.dataset.adj;
+    if (key === 'pixelCrush') crushBase = getState().currentImageData;
+  });
+  adjustSliders.addEventListener('touchstart', e => {
+    const key = e.target.dataset.adj;
+    if (key === 'pixelCrush') crushBase = getState().currentImageData;
+  });
+
   adjustSliders.addEventListener('input', e => {
     const slider = e.target.closest('[data-adj]');
     if (!slider) return;
     const key = slider.dataset.adj, val = parseInt(slider.value);
     
     if (key === 'pixelCrush') {
-      performPixelCrush(val);
+      if (!crushBase) crushBase = getState().currentImageData;
+      performPixelCrush(val, crushBase);
+      $(`adj-val-${key}`).textContent = val;
       return;
     }
 
@@ -264,6 +278,15 @@ function buildAdjustPanel() {
     $(`adj-val-${key}`).textContent = val;
     scheduleApply();
   });
+
+  adjustSliders.addEventListener('change', e => {
+    const key = e.target.dataset.adj;
+    if (key === 'pixelCrush') {
+      pushHistory(getState().currentImageData);
+      crushBase = null;
+    }
+  });
+
   adjustSliders.addEventListener('click', e => {
     const btn = e.target.closest('[data-reset]');
     if (!btn) return;
@@ -274,25 +297,22 @@ function buildAdjustPanel() {
   });
 }
 
-function performPixelCrush(val) {
-  if (val <= 0) return;
-  const state = getState();
-  const data = state.currentImageData;
+function performPixelCrush(val, source) {
+  if (!source) return;
   const factor = 1 - (val / 100);
-  const nw = Math.max(20, Math.round(data.width * factor));
-  const nh = Math.max(20, Math.round(data.height * factor));
+  const nw = Math.max(10, Math.round(source.width * factor));
+  const nh = Math.max(10, Math.round(source.height * factor));
   
   const oc = new OffscreenCanvas(nw, nh);
   const ctx = oc.getContext('2d');
-  const src = new OffscreenCanvas(data.width, data.height);
-  src.getContext('2d').putImageData(data, 0, 0);
+  const src = new OffscreenCanvas(source.width, source.height);
+  src.getContext('2d').putImageData(source, 0, 0);
   ctx.drawImage(src, 0, 0, nw, nh);
   
   const nd = ctx.getImageData(0, 0, nw, nh);
-  setState({ currentImageData: nd });
-  pushHistory(nd);
+  mainCanvas.width = nw; mainCanvas.height = nh;
   renderCanvas(nd);
-  showToast(`Crushed to ${nw}x${nh}`);
+  setState({ currentImageData: nd });
 }
 
 function buildToolsPanel() {
