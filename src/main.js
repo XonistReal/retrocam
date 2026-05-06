@@ -271,8 +271,28 @@ function buildAdjustPanel() {
     adjustSliders.querySelector(`[data-adj="${key}"]`).value = 0;
     setState({ adjustments: { ...getState().adjustments, [key]: 0 } });
     $(`adj-val-${key}`).textContent = 0;
-    scheduleApply();
   });
+}
+
+function performPixelCrush(val) {
+  if (val <= 0) return;
+  const state = getState();
+  const data = state.currentImageData;
+  const factor = 1 - (val / 100);
+  const nw = Math.max(20, Math.round(data.width * factor));
+  const nh = Math.max(20, Math.round(data.height * factor));
+  
+  const oc = new OffscreenCanvas(nw, nh);
+  const ctx = oc.getContext('2d');
+  const src = new OffscreenCanvas(data.width, data.height);
+  src.getContext('2d').putImageData(data, 0, 0);
+  ctx.drawImage(src, 0, 0, nw, nh);
+  
+  const nd = ctx.getImageData(0, 0, nw, nh);
+  setState({ currentImageData: nd });
+  pushHistory(nd);
+  renderCanvas(nd);
+  showToast(`Crushed to ${nw}x${nh}`);
 }
 
 function buildToolsPanel() {
@@ -588,67 +608,46 @@ function openExportModal() {
   $('export-modal').classList.remove('hidden');
 }
 
-function downloadImage() {
+async function showSaveModal() {
   const state = getState();
-  const format = document.querySelector('input[name="format"]:checked')?.value || 'png';
+  const format = document.querySelector('input[name="format"]:checked')?.value || 'jpeg';
   const quality = parseInt($('export-quality')?.value || 92) / 100;
   const res = $('export-resolution')?.value || 'original';
   const orig = state.originalImage;
+  
+  if (!state.imageLoaded) return;
+  
+  $('export-modal').classList.add('hidden');
+  showToast('Processing high-res export...');
+
   let w = orig.width, h = orig.height;
   const mm = { '4k':3840, '2k':2560, '1080':1920, '720':1280, '480':640 };
   if (res !== 'original' && mm[res]) { const r = Math.min(mm[res]/w, mm[res]/h); if (r<1) { w=Math.round(w*r); h=Math.round(h*r); } }
-  const oc = document.createElement('canvas'); oc.width = w; oc.height = h;
-  const octx = oc.getContext('2d', { willReadFrequently: true });
+  
+  const oc = new OffscreenCanvas(w, h);
+  const octx = oc.getContext('2d');
   octx.drawImage(orig, 0, 0, w, h);
   let data = octx.getImageData(0, 0, w, h);
+  
   const preset = state.activePreset ? PRESETS.find(p => p.id === state.activePreset) : null;
   const fx = { ...state.adjustments };
   if (preset) { for (const [k,v] of Object.entries(preset.fx)) fx[k] = (fx[k]||0) + v*(state.presetIntensity/100); }
+  
   data = applyEffects(data, fx, 100);
   octx.putImageData(data, 0, 0);
-  const link = document.createElement('a');
-  link.download = `retrolens_${Date.now()}.${format}`;
-  link.href = oc.toDataURL(format==='png'?'image/png':format==='webp'?'image/webp':'image/jpeg', quality);
-  link.click();
-  showToast('Photo saved!'); $('export-modal').classList.add('hidden');
-}
 
-async function showSaveModal() {
-  const state = getState();
-  if (!state.imageLoaded) return;
-  
+  const dataUrl = await new Promise(r => {
+    oc.convertToBlob({ type: `image/${format}`, quality }).then(blob => r(URL.createObjectURL(blob)));
+  });
+
   const modal = $('save-modal');
   const imgPreview = $('save-preview');
-  
-  showToast('Generating high-res export...');
-  
-  // Use a temporary canvas to apply full effects
-  const data = state.currentImageData;
-  const oc = new OffscreenCanvas(data.width, data.height);
-  const ctx = oc.getContext('2d');
-  
-  let result = applyEffects(data, state.adjustments, 100);
-  if (state.adjustments.sharpness) result = applySharpen(result, state.adjustments.sharpness);
-  if (state.adjustments.blur) result = applyBlur(result, state.adjustments.blur);
-  
-  ctx.putImageData(result, 0, 0);
-  
-  if (state.adjustments.jpegQ < 100) {
-    const compressed = await applyJPEGCompression(oc, state.adjustments.jpegQ);
-    ctx.putImageData(compressed, 0, 0);
-  }
-  
-  const dataUrl = oc.convertToBlob ? 
-    URL.createObjectURL(await oc.convertToBlob({ type: 'image/jpeg', quality: 0.95 })) :
-    mainCanvas.toDataURL('image/jpeg', 0.95);
-    
   imgPreview.src = dataUrl;
   modal.classList.remove('hidden');
-  
-  // For non-mobile, still trigger download
+
   if (!/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
     const link = document.createElement('a');
-    link.download = `retrolens-${Date.now()}.jpg`;
+    link.download = `retrolens_${Date.now()}.${format}`;
     link.href = dataUrl;
     link.click();
   } else {
