@@ -238,6 +238,7 @@ function buildAdjustPanel() {
     { key:'vignette', label:'Vignette', min:0, max:100 },
     { key:'grain', label:'Grain', min:0, max:100 },
     { key:'fade', label:'Fade', min:0, max:100 },
+    { key:'pixelCrush', label:'Pixel Crush', min:0, max:90 },
   ];
   adjustSliders.innerHTML = items.map(it => `
     <div class="adjust-item">
@@ -253,6 +254,12 @@ function buildAdjustPanel() {
     const slider = e.target.closest('[data-adj]');
     if (!slider) return;
     const key = slider.dataset.adj, val = parseInt(slider.value);
+    
+    if (key === 'pixelCrush') {
+      performPixelCrush(val);
+      return;
+    }
+
     setState({ adjustments: { ...getState().adjustments, [key]: val } });
     $(`adj-val-${key}`).textContent = val;
     scheduleApply();
@@ -519,7 +526,9 @@ function bindEvents() {
   $('btn-export')?.addEventListener('click', openExportModal);
   $('btn-export-close')?.addEventListener('click', () => $('export-modal').classList.add('hidden'));
   $('export-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => $('export-modal').classList.add('hidden'));
-  $('btn-download')?.addEventListener('click', downloadImage);
+  $('btn-download')?.addEventListener('click', showSaveModal);
+  $('btn-save-close')?.addEventListener('click', () => $('save-modal').classList.add('hidden'));
+  $('save-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => $('save-modal').classList.add('hidden'));
 
   document.querySelectorAll('.export-radio input').forEach(r => {
     r.addEventListener('change', () => {
@@ -604,7 +613,48 @@ function downloadImage() {
   showToast('Photo saved!'); $('export-modal').classList.add('hidden');
 }
 
-function showToast(msg) {
+async function showSaveModal() {
+  const state = getState();
+  if (!state.imageLoaded) return;
+  
+  const modal = $('save-modal');
+  const imgPreview = $('save-preview');
+  
+  showToast('Generating high-res export...');
+  
+  // Use a temporary canvas to apply full effects
+  const data = state.currentImageData;
+  const oc = new OffscreenCanvas(data.width, data.height);
+  const ctx = oc.getContext('2d');
+  
+  let result = applyEffects(data, state.adjustments, 100);
+  if (state.adjustments.sharpness) result = applySharpen(result, state.adjustments.sharpness);
+  if (state.adjustments.blur) result = applyBlur(result, state.adjustments.blur);
+  
+  ctx.putImageData(result, 0, 0);
+  
+  if (state.adjustments.jpegQ < 100) {
+    const compressed = await applyJPEGCompression(oc, state.adjustments.jpegQ);
+    ctx.putImageData(compressed, 0, 0);
+  }
+  
+  const dataUrl = oc.convertToBlob ? 
+    URL.createObjectURL(await oc.convertToBlob({ type: 'image/jpeg', quality: 0.95 })) :
+    mainCanvas.toDataURL('image/jpeg', 0.95);
+    
+  imgPreview.src = dataUrl;
+  modal.classList.remove('hidden');
+  
+  // For non-mobile, still trigger download
+  if (!/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+    const link = document.createElement('a');
+    link.download = `retrolens-${Date.now()}.jpg`;
+    link.href = dataUrl;
+    link.click();
+  } else {
+    showToast('Long press image to save to Photos');
+  }
+}
   let t = document.querySelector('.toast');
   if (!t) { t = document.createElement('div'); t.className = 'toast'; document.body.appendChild(t); }
   t.textContent = msg; t.classList.add('show');

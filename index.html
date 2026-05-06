@@ -267,6 +267,24 @@
       </div>
     </div>
 
+    <!-- Save / Gallery Modal (for mobile) -->
+    <div id="save-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content" style="max-width: 400px;">
+        <div class="modal-header">
+          <h3>Save to Gallery</h3>
+          <button id="btn-save-close" class="topbar-btn">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="modal-body" style="padding: 0 20px 20px;">
+          <p style="font-size: 14px; color: var(--text-secondary); margin-bottom: 15px;">Long press the image below to save it to your photos.</p>
+          <img id="save-preview" style="width: 100%; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);" />
+          <button class="btn btn-primary btn-full" style="margin-top: 20px;" onclick="document.getElementById('save-modal').classList.add('hidden')">Done</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Hidden file input -->
     <input type="file" id="file-input" accept="image/*" class="hidden" />
   </div>

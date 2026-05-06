@@ -2,27 +2,29 @@
 // Uses offscreen canvas for JPEG compression simulation
 
 export function applyEffects(imageData, fx, intensity = 100) {
-  const scale = intensity / 100;
+  const factor = intensity / 100;
+  // Use a consistent reference resolution (1200px) for spatial effects
+  const resScale = imageData.width / 1200;
   const w = imageData.width, h = imageData.height;
   const data = new Uint8ClampedArray(imageData.data);
 
   // Brightness
-  if (fx.brightness) applyBrightness(data, fx.brightness * scale);
+  if (fx.brightness) applyBrightness(data, fx.brightness * factor);
   // Contrast
-  if (fx.contrast) applyContrast(data, fx.contrast * scale);
+  if (fx.contrast) applyContrast(data, fx.contrast * factor);
   // Exposure
-  if (fx.exposure) applyExposure(data, fx.exposure * scale);
+  if (fx.exposure) applyExposure(data, fx.exposure * factor);
   // Saturation
-  if (fx.saturation) applySaturation(data, fx.saturation * scale);
+  if (fx.saturation) applySaturation(data, fx.saturation * factor);
   // Temperature
-  if (fx.temperature) applyTemperature(data, fx.temperature * scale);
+  if (fx.temperature) applyTemperature(data, fx.temperature * factor);
   // Tint
-  if (fx.tint) applyTint(data, fx.tint * scale);
+  if (fx.tint) applyTint(data, fx.tint * factor);
   // Highlights/Shadows
-  if (fx.highlights) applyHighlights(data, fx.highlights * scale);
-  if (fx.shadows) applyShadows(data, fx.shadows * scale);
+  if (fx.highlights) applyHighlights(data, fx.highlights * factor);
+  if (fx.shadows) applyShadows(data, fx.shadows * factor);
   // Fade (lift blacks)
-  if (fx.fade) applyFade(data, fx.fade * scale);
+  if (fx.fade) applyFade(data, fx.fade * factor);
   // Bit depth reduction
   if (fx.bitDepth) applyBitDepth(data, fx.bitDepth);
   // Thermal
@@ -30,32 +32,32 @@ export function applyEffects(imageData, fx, intensity = 100) {
 
   let result = new ImageData(data, w, h);
 
-  // Channel shift (RGB split)
-  if (fx.channelShift) result = applyChannelShift(result, Math.round(fx.channelShift * scale));
+  // Channel shift (RGB split) - scale with resolution
+  if (fx.channelShift) result = applyChannelShift(result, Math.round(fx.channelShift * factor * resScale));
   // Scanlines
-  if (fx.scanlines) result = applyScanlines(result, fx.scanlines * scale);
+  if (fx.scanlines) result = applyScanlines(result, fx.scanlines * factor);
   // Grain
-  if (fx.grain) result = applyGrain(result, fx.grain * scale);
+  if (fx.grain) result = applyGrain(result, fx.grain * factor);
   // Vignette
-  if (fx.vignette) result = applyVignette(result, fx.vignette * scale);
+  if (fx.vignette) result = applyVignette(result, fx.vignette * factor);
   // Dust
-  if (fx.dust) result = applyDust(result, fx.dust * scale);
+  if (fx.dust) result = applyDust(result, fx.dust * factor);
   // Scratches
-  if (fx.scratches) result = applyScratches(result, fx.scratches * scale);
+  if (fx.scratches) result = applyScratches(result, fx.scratches * factor);
   // Light leaks
-  if (fx.lightleak) result = applyLightLeak(result, fx.lightleak * scale);
-  // Halation (bloom on highlights)
-  if (fx.halation) result = applyHalation(result, fx.halation * scale);
-  // Chromatic aberration
-  if (fx.chromatic) result = applyChromaticAberration(result, fx.chromatic * scale);
+  if (fx.lightleak) result = applyLightLeak(result, fx.lightleak * factor);
+  // Halation (bloom on highlights) - scale with resolution
+  if (fx.halation) result = applyHalation(result, fx.halation * factor * resScale);
+  // Chromatic aberration - scale with resolution
+  if (fx.chromatic) result = applyChromaticAberration(result, fx.chromatic * factor * resScale);
   // Lens distortion (Barrel / Fisheye)
-  if (fx.barrel || fx.fisheye) result = applyLensDistortion(result, (fx.barrel || 0) + (fx.fisheye || 0) * scale);
+  if (fx.barrel || fx.fisheye) result = applyLensDistortion(result, (fx.barrel || 0) + (fx.fisheye || 0) * factor);
   // Datamosh simulation
-  if (fx.datamosh) result = applyDatamosh(result, fx.datamosh * scale);
+  if (fx.datamosh) result = applyDatamosh(result, fx.datamosh * factor);
   // Color reduction
   if (fx.colorReduce) result = applyColorReduction(result, fx.colorReduce, fx.dither);
-  // Pixelate
-  if (fx.pixelate) result = applyPixelate(result, Math.round(fx.pixelate * scale));
+  // Pixelate - scale with resolution
+  if (fx.pixelate) result = applyPixelate(result, Math.round(fx.pixelate * factor * resScale));
 
   return result;
 }
