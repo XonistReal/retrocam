@@ -268,50 +268,6 @@ function applyVignette(imageData, strength) {
   return new ImageData(d, w, h);
 }
 
-function applyDust(imageData, amount) {
-  const d = new Uint8ClampedArray(imageData.data);
-  const w = imageData.width, h = imageData.height;
-  const count = Math.floor(amount * 3);
-  for (let n = 0; n < count; n++) {
-    const x = Math.floor(Math.random() * w);
-    const y = Math.floor(Math.random() * h);
-    const r = Math.floor(Math.random() * 3) + 1;
-    for (let dy = -r; dy <= r; dy++) {
-      for (let dx = -r; dx <= r; dx++) {
-        const px = x + dx, py = y + dy;
-        if (px >= 0 && px < w && py >= 0 && py < h) {
-          const i = (py * w + px) * 4;
-          const v = 200 + Math.random() * 55;
-          d[i] = v; d[i+1] = v; d[i+2] = v;
-        }
-      }
-    }
-  }
-  return new ImageData(d, w, h);
-}
-
-function applyScratches(imageData, amount) {
-  const d = new Uint8ClampedArray(imageData.data);
-  const w = imageData.width, h = imageData.height;
-  const count = Math.floor(amount / 10) + 1;
-  for (let n = 0; n < count; n++) {
-    const x = Math.floor(Math.random() * w);
-    const len = Math.floor(Math.random() * h * 0.6) + h * 0.2;
-    const startY = Math.floor(Math.random() * (h - len));
-    const brightness = 180 + Math.random() * 75;
-    for (let y = startY; y < startY + len; y++) {
-      const cx = x + Math.floor(Math.sin(y * 0.05) * 2);
-      if (cx >= 0 && cx < w) {
-        const i = (y * w + cx) * 4;
-        const a = 0.3 + Math.random() * 0.4;
-        d[i] = d[i] * (1 - a) + brightness * a;
-        d[i+1] = d[i+1] * (1 - a) + brightness * a;
-        d[i+2] = d[i+2] * (1 - a) + brightness * a;
-      }
-    }
-  }
-  return new ImageData(d, w, h);
-}
 
 function applyLightLeak(imageData, strength) {
   const d = new Uint8ClampedArray(imageData.data);
@@ -458,6 +414,7 @@ function applyLensDistortion(imageData, strength) {
   }
   return new ImageData(out, w, h);
 }
+
 
 function applyDatamosh(imageData, strength, resScale = 1) {
   const w = imageData.width, h = imageData.height;
