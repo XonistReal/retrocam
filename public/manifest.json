@@ -1,0 +1,13 @@
+{
+  "name": "RetroLens - Camera Emulator",
+  "short_name": "RetroLens",
+  "description": "Emulate 90s & 2000s cameras with 200+ presets",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a0f",
+  "theme_color": "#0a0a0f",
+  "orientation": "any",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

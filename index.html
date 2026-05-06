@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#0a0a0f" />
+  <meta name="description" content="RetroLens — Emulate 90s & 2000s cameras, disposable film, compression artifacts, and more. 200+ presets with a full photo editor." />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>RetroLens — Retro Camera Emulator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=VT323&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+  <link rel="manifest" href="/manifest.json" />
+</head>
+<body>
+  <div id="app">
+    <!-- Splash / Loading -->
+    <div id="splash-screen" class="splash">
+      <div class="splash-content">
+        <div class="splash-icon">📸</div>
+        <h1 class="splash-title">RetroLens</h1>
+        <p class="splash-sub">Camera Emulator</p>
+        <div class="splash-loader"><div class="splash-loader-bar"></div></div>
+      </div>
+    </div>
+
+    <!-- Main App Shell -->
+    <div id="app-shell" class="app-shell hidden">
+      <!-- Top Bar -->
+      <header class="topbar">
+        <button id="btn-menu" class="topbar-btn" aria-label="Menu">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </button>
+        <div class="topbar-title">
+          <span class="topbar-logo">📸</span>
+          <span>RetroLens</span>
+        </div>
+        <div class="topbar-actions">
+          <button id="btn-undo" class="topbar-btn" aria-label="Undo" disabled>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 8l-3 3 3 3M1 11h10a5 5 0 000-10H8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button id="btn-redo" class="topbar-btn" aria-label="Redo" disabled>
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M14 8l3 3-3 3M17 11H7a5 5 0 010-10h3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button id="btn-compare" class="topbar-btn" aria-label="Before/After">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="1" y="1" width="16" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/><line x1="9" y1="1" x2="9" y2="17" stroke="currentColor" stroke-width="1.5"/></svg>
+          </button>
+          <button id="btn-export" class="topbar-btn accent" aria-label="Export">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 2v10M5 8l4 4 4-4M3 14v1a1 1 0 001 1h10a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Canvas Area -->
+      <main class="canvas-area" id="canvas-area">
+        <!-- Empty State -->
+        <div id="empty-state" class="empty-state">
+          <div class="empty-icon">📷</div>
+          <h2>Load a Photo</h2>
+          <p>Take a photo or upload from your gallery to get started</p>
+          <div class="empty-actions">
+            <button id="btn-camera-empty" class="btn btn-primary">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M7 3L5.5 5H3a1 1 0 00-1 1v9a1 1 0 001 1h14a1 1 0 001-1V6a1 1 0 00-1-1h-2.5L13 3H7z" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10.5" r="3" stroke="currentColor" stroke-width="1.5"/></svg>
+              Take Photo
+            </button>
+            <button id="btn-upload-empty" class="btn btn-secondary">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 14V4M6 8l4-4 4 4M3 14v2a1 1 0 001 1h12a1 1 0 001-1v-2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Upload Photo
+            </button>
+          </div>
+        </div>
+
+        <!-- Canvas (hidden until image loaded) -->
+        <div id="canvas-container" class="canvas-container hidden">
+          <canvas id="main-canvas"></canvas>
+          <canvas id="preview-canvas" class="hidden"></canvas>
+          <!-- Before/After slider -->
+          <div id="compare-slider" class="compare-slider hidden">
+            <div class="compare-line"></div>
+            <div class="compare-handle">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M8 12l-3 3 3 3M16 12l3 3-3 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </div>
+          </div>
+        </div>
+      </main>
+
+      <!-- Side Panel (Desktop) / Bottom Sheet (Mobile) -->
+      <aside id="side-panel" class="side-panel">
+        <div class="panel-header">
+          <div class="panel-tabs">
+            <button class="panel-tab active" data-panel="presets">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="1" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="1" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/><rect x="9" y="9" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.2"/></svg>
+              Presets
+            </button>
+            <button class="panel-tab" data-panel="adjust">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" stroke-width="1.2"/><circle cx="5" cy="4" r="1.5" fill="currentColor"/><circle cx="10" cy="8" r="1.5" fill="currentColor"/><circle cx="7" cy="12" r="1.5" fill="currentColor"/></svg>
+              Adjust
+            </button>
+            <button class="panel-tab" data-panel="tools">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M11.5 1.5l3 3-9 9H2.5v-3l9-9z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>
+              Tools
+            </button>
+          </div>
+        </div>
+
+        <!-- Presets Panel -->
+        <div id="presets-panel" class="panel-content active">
+          <!-- Search -->
+          <div class="panel-search">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4.5" stroke="currentColor" stroke-width="1.2"/><path d="M9.5 9.5L13 13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            <input type="text" id="preset-search" placeholder="Search 200+ presets..." />
+          </div>
+          <!-- Category pills -->
+          <div class="category-pills" id="category-pills"></div>
+          <!-- Preset grid -->
+          <div class="preset-grid" id="preset-grid"></div>
+          <!-- Intensity slider (shown when preset selected) -->
+          <div id="intensity-bar" class="intensity-bar hidden">
+            <label>Intensity</label>
+            <input type="range" id="intensity-slider" min="0" max="100" value="100" />
+            <span id="intensity-value">100%</span>
+          </div>
+        </div>
+
+        <!-- Adjust Panel -->
+        <div id="adjust-panel" class="panel-content">
+          <div class="adjust-sliders" id="adjust-sliders"></div>
+        </div>
+
+        <!-- Tools Panel -->
+        <div id="tools-panel" class="panel-content">
+          <div class="tools-grid" id="tools-grid"></div>
+          <!-- Tool options area -->
+          <div id="tool-options" class="tool-options hidden"></div>
+        </div>
+      </aside>
+
+      <!-- Bottom Nav (Mobile) -->
+      <nav class="bottom-nav" id="bottom-nav">
+        <button class="nav-btn active" data-action="presets">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><rect x="2" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="13" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
+          <span>Presets</span>
+        </button>
+        <button class="nav-btn" data-action="adjust">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M3 6h16M3 11h16M3 16h16" stroke="currentColor" stroke-width="1.5"/><circle cx="7" cy="6" r="2" fill="currentColor"/><circle cx="14" cy="11" r="2" fill="currentColor"/><circle cx="9" cy="16" r="2" fill="currentColor"/></svg>
+          <span>Adjust</span>
+        </button>
+        <button class="nav-btn camera-btn" data-action="camera" id="btn-camera-nav">
+          <div class="camera-btn-inner">
+            <svg width="26" height="26" viewBox="0 0 26 26" fill="none"><path d="M9 4L7 7H4a1.5 1.5 0 00-1.5 1.5v11A1.5 1.5 0 004 21h18a1.5 1.5 0 001.5-1.5v-11A1.5 1.5 0 0022 7h-3l-2-3H9z" stroke="currentColor" stroke-width="1.5"/><circle cx="13" cy="13.5" r="4" stroke="currentColor" stroke-width="1.5"/></svg>
+          </div>
+          <span>Capture</span>
+        </button>
+        <button class="nav-btn" data-action="tools">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M14.5 2.5l5 5-12 12H2.5v-5l12-12z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+          <span>Tools</span>
+        </button>
+        <button class="nav-btn" data-action="export">
+          <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M11 3v12M7 11l4 4 4-4M4 17v1.5a1 1 0 001 1h12a1 1 0 001-1V17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span>Export</span>
+        </button>
+      </nav>
+    </div>
+
+    <!-- Camera Modal -->
+    <div id="camera-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content camera-modal-content">
+        <div class="camera-header">
+          <button id="btn-camera-close" class="topbar-btn">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+          <span>Camera</span>
+          <button id="btn-camera-flip" class="topbar-btn">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M16 7l-3-3-3 3M13 4v8M4 13l3 3 3-3M7 16V8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+        <video id="camera-video" autoplay playsinline></video>
+        <div class="camera-controls">
+          <button id="btn-camera-capture" class="shutter-btn" aria-label="Capture">
+            <div class="shutter-outer"><div class="shutter-inner"></div></div>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Export Modal -->
+    <div id="export-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content export-modal-content">
+        <div class="modal-header">
+          <h3>Export Photo</h3>
+          <button id="btn-export-close" class="topbar-btn">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="export-options">
+          <div class="export-group">
+            <label>Format</label>
+            <div class="export-radio-group">
+              <label class="export-radio active"><input type="radio" name="format" value="png" checked /><span>PNG</span></label>
+              <label class="export-radio"><input type="radio" name="format" value="jpeg" /><span>JPEG</span></label>
+              <label class="export-radio"><input type="radio" name="format" value="webp" /><span>WebP</span></label>
+            </div>
+          </div>
+          <div class="export-group" id="quality-group">
+            <label>Quality</label>
+            <input type="range" id="export-quality" min="10" max="100" value="92" />
+            <span id="export-quality-value">92%</span>
+          </div>
+          <div class="export-group">
+            <label>Resolution</label>
+            <select id="export-resolution">
+              <option value="original">Original</option>
+              <option value="4k">4K (3840px)</option>
+              <option value="2k">2K (2560px)</option>
+              <option value="1080">1080p</option>
+              <option value="720">720p</option>
+              <option value="480">480p (Retro)</option>
+            </select>
+          </div>
+          <button id="btn-download" class="btn btn-primary btn-full">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M9 2v10M5 8l4 4 4-4M3 14v1a1 1 0 001 1h10a1 1 0 001-1v-1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Download
+          </button>
+        </div>
+      </div>
+    </div>
+
+      </div>
+    </div>
+
+    <!-- About / Menu Modal -->
+    <div id="menu-modal" class="modal hidden">
+      <div class="modal-backdrop"></div>
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>RetroLens Info</h3>
+          <button id="btn-menu-close" class="topbar-btn">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="modal-body" style="padding: 0 20px 30px;">
+          <div style="text-align: center; margin-bottom: 20px;">
+            <div style="font-size: 48px;">📸</div>
+            <h2 style="color: var(--accent);">RetroLens v1.0</h2>
+            <p style="color: var(--text-secondary); font-size: 14px;">The Ultimate Camera Emulator</p>
+          </div>
+          <div style="display: flex; flex-direction: column; gap: 15px;">
+            <div style="background: var(--bg-primary); padding: 15px; border-radius: 10px; border: 1px solid var(--border);">
+              <h4 style="margin-bottom: 5px;">200+ Presets</h4>
+              <p style="font-size: 13px; color: var(--text-tertiary);">Curated collection of film, digital, and glitch artifacts.</p>
+            </div>
+            <div style="background: var(--bg-primary); padding: 15px; border-radius: 10px; border: 1px solid var(--border);">
+              <h4 style="margin-bottom: 5px;">Pro Editing</h4>
+              <p style="font-size: 13px; color: var(--text-tertiary);">Advanced adjustments, cropping, and non-destructive history.</p>
+            </div>
+            <div style="background: var(--bg-primary); padding: 15px; border-radius: 10px; border: 1px solid var(--border);">
+              <h4 style="margin-bottom: 5px;">Privacy First</h4>
+              <p style="font-size: 13px; color: var(--text-tertiary);">All processing happens locally on your device. No photos are ever uploaded.</p>
+            </div>
+          </div>
+          <button id="btn-install-pwa" class="btn btn-secondary btn-full" style="margin-top: 20px; display: none;">Install App</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hidden file input -->
+    <input type="file" id="file-input" accept="image/*" class="hidden" />
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
