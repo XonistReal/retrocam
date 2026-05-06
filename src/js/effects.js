@@ -41,9 +41,9 @@ export function applyEffects(imageData, fx, intensity = 100) {
   // Vignette
   if (fx.vignette) result = applyVignette(result, fx.vignette * factor);
   // Dust
-  if (fx.dust) result = applyDust(result, fx.dust * factor);
+  if (fx.dust) result = applyDust(result, fx.dust * factor, resScale);
   // Scratches
-  if (fx.scratches) result = applyScratches(result, fx.scratches * factor);
+  if (fx.scratches) result = applyScratches(result, fx.scratches * factor, resScale);
   // Light leaks
   if (fx.lightleak) result = applyLightLeak(result, fx.lightleak * factor);
   // Halation (bloom on highlights) - scale with resolution
@@ -53,7 +53,7 @@ export function applyEffects(imageData, fx, intensity = 100) {
   // Lens distortion (Barrel / Fisheye)
   if (fx.barrel || fx.fisheye) result = applyLensDistortion(result, (fx.barrel || 0) + (fx.fisheye || 0) * factor);
   // Datamosh simulation
-  if (fx.datamosh) result = applyDatamosh(result, fx.datamosh * factor);
+  if (fx.datamosh) result = applyDatamosh(result, fx.datamosh * factor, resScale);
   // Color reduction
   if (fx.colorReduce) result = applyColorReduction(result, fx.colorReduce, fx.dither);
   // Pixelate - scale with resolution
@@ -459,11 +459,11 @@ function applyLensDistortion(imageData, strength) {
   return new ImageData(out, w, h);
 }
 
-function applyDatamosh(imageData, strength) {
+function applyDatamosh(imageData, strength, resScale = 1) {
   const w = imageData.width, h = imageData.height;
   const d = new Uint8ClampedArray(imageData.data);
-  const blockSize = 16;
-  const count = Math.floor(strength / 10) + 2;
+  const blockSize = Math.round(16 * resScale);
+  const count = Math.floor((strength / 10 + 2) * (1 / resScale));
   for (let n = 0; n < count; n++) {
     const bx = Math.floor(Math.random() * (w / blockSize)) * blockSize;
     const by = Math.floor(Math.random() * (h / blockSize)) * blockSize;
@@ -477,6 +477,51 @@ function applyDatamosh(imageData, strength) {
           const si = (sy * w + sx) * 4;
           d[i] = d[si]; d[i+1] = d[si+1]; d[i+2] = d[si+2];
         }
+      }
+    }
+  }
+  return new ImageData(d, w, h);
+}
+
+function applyDust(imageData, amount, resScale = 1) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const w = imageData.width, h = imageData.height;
+  const count = Math.floor(amount * 3 * (1 / resScale));
+  for (let n = 0; n < count; n++) {
+    const x = Math.floor(Math.random() * w);
+    const y = Math.floor(Math.random() * h);
+    const r = Math.max(1, Math.floor((Math.random() * 3 + 1) * resScale));
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        const px = x + dx, py = y + dy;
+        if (px >= 0 && px < w && py >= 0 && py < h) {
+          const i = (py * w + px) * 4;
+          const v = 200 + Math.random() * 55;
+          d[i] = v; d[i+1] = v; d[i+2] = v;
+        }
+      }
+    }
+  }
+  return new ImageData(d, w, h);
+}
+
+function applyScratches(imageData, amount, resScale = 1) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const w = imageData.width, h = imageData.height;
+  const count = Math.floor((amount / 10 + 1) * (1 / resScale));
+  for (let n = 0; n < count; n++) {
+    const x = Math.floor(Math.random() * w);
+    const len = Math.floor(Math.random() * h * 0.6) + h * 0.2;
+    const startY = Math.floor(Math.random() * (h - len));
+    const brightness = 180 + Math.random() * 75;
+    for (let y = startY; y < startY + len; y++) {
+      const cx = x + Math.floor(Math.sin(y * 0.05) * 2 * resScale);
+      if (cx >= 0 && cx < w) {
+        const i = (y * w + cx) * 4;
+        const a = 0.3 + Math.random() * 0.4;
+        d[i] = d[i] * (1 - a) + brightness * a;
+        d[i+1] = d[i+1] * (1 - a) + brightness * a;
+        d[i+2] = d[i+2] * (1 - a) + brightness * a;
       }
     }
   }

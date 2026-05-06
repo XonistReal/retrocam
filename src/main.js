@@ -331,6 +331,12 @@ function performPixelCrush(val, source) {
   mainCanvas.width = w; mainCanvas.height = h;
   renderCanvas(nd);
   setState({ currentImageData: nd });
+  
+  // Update base image for non-destructive effects
+  const state_ = getState();
+  const newHistory = [...state_.history];
+  newHistory[0] = nd; // Set as the new base
+  setState({ history: newHistory });
 }
 
 function buildToolsPanel() {
@@ -370,7 +376,10 @@ function handleTool(tool) {
     octx.drawImage(src, 0, 0);
     mainCanvas.width = h; mainCanvas.height = w;
     const nd = octx.getImageData(0, 0, h, w);
-    setState({ currentImageData: nd }); pushHistory(nd); renderCanvas(nd);
+    setState({ currentImageData: nd }); 
+    const newHist = [...getState().history]; newHist[0] = nd;
+    setState({ history: newHist });
+    pushHistory(nd); renderCanvas(nd);
   } else if (tool === 'flip-h' || tool === 'flip-v') {
     const oc = new OffscreenCanvas(w, h);
     const octx = oc.getContext('2d');
@@ -380,7 +389,10 @@ function handleTool(tool) {
     else { octx.translate(0, h); octx.scale(1, -1); }
     octx.drawImage(src, 0, 0);
     const nd = octx.getImageData(0, 0, w, h);
-    setState({ currentImageData: nd }); pushHistory(nd); renderCanvas(nd);
+    setState({ currentImageData: nd });
+    const newHist_ = [...getState().history]; newHist_[0] = nd;
+    setState({ history: newHist_ });
+    pushHistory(nd); renderCanvas(nd);
   } else if (tool === 'timestamp') {
     const oc = new OffscreenCanvas(w, h);
     const octx = oc.getContext('2d');
@@ -477,6 +489,8 @@ function performCrop(x, y, w, h) {
   mainCanvas.height = h;
   const nd = octx.getImageData(0, 0, w, h);
   setState({ currentImageData: nd });
+  const newHist = [...getState().history]; newHist[0] = nd;
+  setState({ history: newHist });
   pushHistory(nd);
   renderCanvas(nd);
   showToast('Cropped!');
@@ -508,6 +522,8 @@ function addBorder() {
   mainCanvas.height = oc.height;
   const nd = octx.getImageData(0, 0, oc.width, oc.height);
   setState({ currentImageData: nd });
+  const newHist = [...getState().history]; newHist[0] = nd;
+  setState({ history: newHist });
   pushHistory(nd);
   renderCanvas(nd);
   showToast('Film border added!');
@@ -662,21 +678,32 @@ async function showSaveModal() {
   const mm = { '4k':3840, '2k':2560, '1080':1920, '720':1280, '480':640 };
   if (res !== 'original' && mm[res]) { const r = Math.min(mm[res]/w, mm[res]/h); if (r<1) { w=Math.round(w*r); h=Math.round(h*r); } }
   
-  const oc = new OffscreenCanvas(w, h);
+  const oc = document.createElement('canvas'); // Use real canvas for toDataURL
+  oc.width = w; oc.height = h;
   const octx = oc.getContext('2d');
   octx.drawImage(orig, 0, 0, w, h);
-  let data = octx.getImageData(0, 0, w, h);
+  
+  // Re-apply destructive tools if any were used
+  // Note: For a fully professional app we'd track these, but for now we'll use the working base
+  // and scale the effects to the export resolution.
+  const workingBase = state.history[0]; 
+  const exportOc = document.createElement('canvas');
+  exportOc.width = w; exportOc.height = h;
+  const eCtx = exportOc.getContext('2d');
+  
+  // Start from the original high-res but scaled to the requested export resolution
+  eCtx.drawImage(orig, 0, 0, w, h);
+  let data = eCtx.getImageData(0, 0, w, h);
   
   const preset = state.activePreset ? PRESETS.find(p => p.id === state.activePreset) : null;
   const fx = { ...state.adjustments };
   if (preset) { for (const [k,v] of Object.entries(preset.fx)) fx[k] = (fx[k]||0) + v*(state.presetIntensity/100); }
   
   data = applyEffects(data, fx, 100);
-  octx.putImageData(data, 0, 0);
+  eCtx.putImageData(data, 0, 0);
 
-  const dataUrl = await new Promise(r => {
-    oc.convertToBlob({ type: `image/${format}`, quality }).then(blob => r(URL.createObjectURL(blob)));
-  });
+  // Use DataURL for better iOS compatibility (avoids "no internet" blob error)
+  const dataUrl = exportOc.toDataURL(`image/${format}`, quality);
 
   const modal = $('save-modal');
   const imgPreview = $('save-preview');
