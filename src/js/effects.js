@@ -37,7 +37,7 @@ export function applyEffects(imageData, fx, intensity = 100) {
   // Scanlines
   if (fx.scanlines) result = applyScanlines(result, fx.scanlines * factor);
   // Grain
-  if (fx.grain) result = applyGrain(result, fx.grain * factor);
+  if (fx.grain) result = applyGrain(result, fx.grain * factor, resScale);
   // Vignette
   if (fx.vignette) result = applyVignette(result, fx.vignette * factor);
   // Dust
@@ -240,11 +240,14 @@ function applyScanlines(imageData, strength) {
   return new ImageData(d, w, h);
 }
 
-function applyGrain(imageData, amount) {
+function applyGrain(imageData, amount, resScale = 1) {
   const d = new Uint8ClampedArray(imageData.data);
   const a = amount * 1.2;
+  // Scale grain size? No, usually grain is per-pixel, but for high-res it can look too fine.
+  // We'll slightly boost intensity for high-res to keep it visible.
+  const intensity = a * (1 + (resScale - 1) * 0.2); 
   for (let i = 0; i < d.length; i += 4) {
-    const noise = (Math.random() - 0.5) * a;
+    const noise = (Math.random() - 0.5) * intensity;
     d[i] += noise; d[i+1] += noise; d[i+2] += noise;
   }
   return new ImageData(d, imageData.width, imageData.height);
@@ -420,7 +423,7 @@ function applyDatamosh(imageData, strength, resScale = 1) {
   const w = imageData.width, h = imageData.height;
   const d = new Uint8ClampedArray(imageData.data);
   const blockSize = Math.round(16 * resScale);
-  const count = Math.floor((strength / 10 + 2) * (1 / resScale));
+  const count = Math.floor(strength / 10 + 2);
   for (let n = 0; n < count; n++) {
     const bx = Math.floor(Math.random() * (w / blockSize)) * blockSize;
     const by = Math.floor(Math.random() * (h / blockSize)) * blockSize;
@@ -443,7 +446,7 @@ function applyDatamosh(imageData, strength, resScale = 1) {
 function applyDust(imageData, amount, resScale = 1) {
   const d = new Uint8ClampedArray(imageData.data);
   const w = imageData.width, h = imageData.height;
-  const count = Math.floor(amount * 3 * (1 / resScale));
+  const count = Math.floor(amount * 3);
   for (let n = 0; n < count; n++) {
     const x = Math.floor(Math.random() * w);
     const y = Math.floor(Math.random() * h);
@@ -465,7 +468,7 @@ function applyDust(imageData, amount, resScale = 1) {
 function applyScratches(imageData, amount, resScale = 1) {
   const d = new Uint8ClampedArray(imageData.data);
   const w = imageData.width, h = imageData.height;
-  const count = Math.floor((amount / 10 + 1) * (1 / resScale));
+  const count = Math.floor(amount / 10 + 1);
   for (let n = 0; n < count; n++) {
     const x = Math.floor(Math.random() * w);
     const len = Math.floor(Math.random() * h * 0.6) + h * 0.2;
