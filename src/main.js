@@ -299,18 +299,36 @@ function buildAdjustPanel() {
 
 function performPixelCrush(val, source) {
   if (!source) return;
+  const w = source.width, h = source.height;
+  
+  if (val <= 0) {
+    mainCanvas.width = w; mainCanvas.height = h;
+    renderCanvas(source);
+    setState({ currentImageData: source });
+    return;
+  }
+  
   const factor = 1 - (val / 100);
-  const nw = Math.max(10, Math.round(source.width * factor));
-  const nh = Math.max(10, Math.round(source.height * factor));
+  const nw = Math.max(10, Math.round(w * factor));
+  const nh = Math.max(10, Math.round(h * factor));
   
-  const oc = new OffscreenCanvas(nw, nh);
-  const ctx = oc.getContext('2d');
-  const src = new OffscreenCanvas(source.width, source.height);
+  // Step 1: Downscale to tiny resolution
+  const smallOc = new OffscreenCanvas(nw, nh);
+  const smallCtx = smallOc.getContext('2d');
+  const src = new OffscreenCanvas(w, h);
   src.getContext('2d').putImageData(source, 0, 0);
-  ctx.drawImage(src, 0, 0, nw, nh);
+  smallCtx.drawImage(src, 0, 0, nw, nh);
   
-  const nd = ctx.getImageData(0, 0, nw, nh);
-  mainCanvas.width = nw; mainCanvas.height = nh;
+  // Step 2: Upscale back to original resolution with nearest-neighbor
+  const bigOc = new OffscreenCanvas(w, h);
+  const bigCtx = bigOc.getContext('2d');
+  bigCtx.imageSmoothingEnabled = false;
+  bigCtx.msImageSmoothingEnabled = false;
+  bigCtx.webkitImageSmoothingEnabled = false;
+  bigCtx.drawImage(smallOc, 0, 0, nw, nh, 0, 0, w, h);
+  
+  const nd = bigCtx.getImageData(0, 0, w, h);
+  mainCanvas.width = w; mainCanvas.height = h;
   renderCanvas(nd);
   setState({ currentImageData: nd });
 }
