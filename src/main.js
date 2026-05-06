@@ -654,6 +654,7 @@ async function showSaveModal() {
     showToast('Long press image to save to Photos');
   }
 }
+function showToast(msg) {
   let t = document.querySelector('.toast');
   if (!t) { t = document.createElement('div'); t.className = 'toast'; document.body.appendChild(t); }
   t.textContent = msg; t.classList.add('show');
