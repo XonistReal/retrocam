@@ -41,9 +41,9 @@ export function applyEffects(imageData, fx, intensity = 100) {
   // Vignette
   if (fx.vignette) result = applyVignette(result, fx.vignette * factor);
   // Dust
-  if (fx.dust) result = applyDust(result, fx.dust * factor, resScale);
+  if (fx.dust) result = applyDust(result, fx.dust * factor);
   // Scratches
-  if (fx.scratches) result = applyScratches(result, fx.scratches * factor, resScale);
+  if (fx.scratches) result = applyScratches(result, fx.scratches * factor);
   // Light leaks
   if (fx.lightleak) result = applyLightLeak(result, fx.lightleak * factor);
   // Halation (bloom on highlights) - scale with resolution
@@ -53,7 +53,7 @@ export function applyEffects(imageData, fx, intensity = 100) {
   // Lens distortion (Barrel / Fisheye)
   if (fx.barrel || fx.fisheye) result = applyLensDistortion(result, (fx.barrel || 0) + (fx.fisheye || 0) * factor);
   // Datamosh simulation
-  if (fx.datamosh) result = applyDatamosh(result, fx.datamosh * factor, resScale);
+  if (fx.datamosh) result = applyDatamosh(result, fx.datamosh * factor);
   // Color reduction
   if (fx.colorReduce) result = applyColorReduction(result, fx.colorReduce, fx.dither);
   // Pixelate - scale with resolution
@@ -242,10 +242,7 @@ function applyScanlines(imageData, strength) {
 
 function applyGrain(imageData, amount, resScale = 1) {
   const d = new Uint8ClampedArray(imageData.data);
-  const a = amount * 1.2;
-  // Scale grain size? No, usually grain is per-pixel, but for high-res it can look too fine.
-  // We'll slightly boost intensity for high-res to keep it visible.
-  const intensity = a * (1 + (resScale - 1) * 0.2); 
+  const intensity = amount * 1.2;
   for (let i = 0; i < d.length; i += 4) {
     const noise = (Math.random() - 0.5) * intensity;
     d[i] += noise; d[i+1] += noise; d[i+2] += noise;
@@ -419,14 +416,15 @@ function applyLensDistortion(imageData, strength) {
 }
 
 
-function applyDatamosh(imageData, strength, resScale = 1) {
+function applyDatamosh(imageData, strength) {
   const w = imageData.width, h = imageData.height;
   const d = new Uint8ClampedArray(imageData.data);
-  const blockSize = Math.round(16 * resScale);
+  // Use percentage of image width for block size so it matches thumbnail appearance
+  const blockSize = Math.round(w * 0.05); // 5% of width
   const count = Math.floor(strength / 10 + 2);
   for (let n = 0; n < count; n++) {
-    const bx = Math.floor(Math.random() * (w / blockSize)) * blockSize;
-    const by = Math.floor(Math.random() * (h / blockSize)) * blockSize;
+    const bx = Math.floor(Math.random() * (w - blockSize));
+    const by = Math.floor(Math.random() * (h - blockSize));
     const ox = (Math.random() - 0.5) * blockSize * 2;
     const oy = (Math.random() - 0.5) * blockSize * 2;
     for (let y = 0; y < blockSize && by + y < h; y++) {
@@ -443,14 +441,16 @@ function applyDatamosh(imageData, strength, resScale = 1) {
   return new ImageData(d, w, h);
 }
 
-function applyDust(imageData, amount, resScale = 1) {
+function applyDust(imageData, amount) {
   const d = new Uint8ClampedArray(imageData.data);
   const w = imageData.width, h = imageData.height;
-  const count = Math.floor(amount * 3);
+  // Scale radius to image width (approx 1% of width for a 'dead pixel' look)
+  const baseR = Math.max(1, Math.round(w * 0.012)); 
+  const count = Math.floor(amount * 4);
   for (let n = 0; n < count; n++) {
     const x = Math.floor(Math.random() * w);
     const y = Math.floor(Math.random() * h);
-    const r = Math.max(1, Math.floor((Math.random() * 3 + 1) * resScale));
+    const r = Math.max(1, Math.floor(Math.random() * baseR + 1));
     for (let dy = -r; dy <= r; dy++) {
       for (let dx = -r; dx <= r; dx++) {
         const px = x + dx, py = y + dy;
@@ -465,23 +465,27 @@ function applyDust(imageData, amount, resScale = 1) {
   return new ImageData(d, w, h);
 }
 
-function applyScratches(imageData, amount, resScale = 1) {
+function applyScratches(imageData, amount) {
   const d = new Uint8ClampedArray(imageData.data);
   const w = imageData.width, h = imageData.height;
-  const count = Math.floor(amount / 10 + 1);
+  const count = Math.floor(amount / 8 + 1);
+  const thickness = Math.max(1, Math.round(w * 0.002));
   for (let n = 0; n < count; n++) {
     const x = Math.floor(Math.random() * w);
     const len = Math.floor(Math.random() * h * 0.6) + h * 0.2;
     const startY = Math.floor(Math.random() * (h - len));
     const brightness = 180 + Math.random() * 75;
     for (let y = startY; y < startY + len; y++) {
-      const cx = x + Math.floor(Math.sin(y * 0.05) * 2 * resScale);
-      if (cx >= 0 && cx < w) {
-        const i = (y * w + cx) * 4;
-        const a = 0.3 + Math.random() * 0.4;
-        d[i] = d[i] * (1 - a) + brightness * a;
-        d[i+1] = d[i+1] * (1 - a) + brightness * a;
-        d[i+2] = d[i+2] * (1 - a) + brightness * a;
+      const cx = x + Math.floor(Math.sin(y * 0.05) * thickness * 2);
+      for (let tx = -thickness; tx <= thickness; tx++) {
+        const finalX = cx + tx;
+        if (finalX >= 0 && finalX < w) {
+          const i = (y * w + finalX) * 4;
+          const a = (0.3 + Math.random() * 0.4) / (Math.abs(tx) + 1);
+          d[i] = d[i] * (1 - a) + brightness * a;
+          d[i+1] = d[i+1] * (1 - a) + brightness * a;
+          d[i+2] = d[i+2] * (1 - a) + brightness * a;
+        }
       }
     }
   }
