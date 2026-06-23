@@ -505,7 +505,9 @@ input[type="range"]::-moz-range-thumb {
   background: #07070b;
 }
 .pro-slider-list,
-.hsl-mixer {
+.hsl-mixer,
+.curve-grid,
+.color-balance-grid {
   display: flex;
   flex-direction: column;
   gap: var(--sp-3);
@@ -562,6 +564,21 @@ input[type="range"]::-moz-range-thumb {
 .hsl-dot-blue { background: #54a0ff; color: #54a0ff; }
 .hsl-dot-purple { background: #a855f7; color: #a855f7; }
 .hsl-dot-magenta { background: #ff4fd8; color: #ff4fd8; }
+.color-balance-range {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  padding: var(--sp-2);
+  border-radius: var(--r-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+}
+.color-balance-range h5 {
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: capitalize;
+}
 
 /* ===== TOOLS PANEL ===== */
 .tools-grid {
@@ -588,6 +605,39 @@ input[type="range"]::-moz-range-thumb {
   background: var(--bg-primary);
   border-radius: var(--r-md);
   border: 1px solid var(--border);
+}
+.tool-options-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-2);
+}
+.retouch-panel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.retouch-modes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-2);
+}
+.retouch-mode {
+  min-height: 36px;
+  border-radius: var(--r-md);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.retouch-mode.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.retouch-help {
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 
 /* ===== BOTTOM NAV ===== */

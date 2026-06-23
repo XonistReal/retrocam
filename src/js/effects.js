@@ -146,6 +146,8 @@ export function applyEffects(imageData, fx, intensity = 100) {
 
   // Levels and gamma are applied before tone/color work, like a base correction layer.
   if (fx.blackPoint || fx.whitePoint || fx.gamma) applyLevels(data, fx.blackPoint || 0, fx.whitePoint ?? 100, fx.gamma || 0);
+  // Curves emulate Photoshop point-curve shaping with regional luminance handles.
+  if (fx.toneCurve) applyToneCurve(data, fx.toneCurve, factor);
   // Brightness
   if (fx.brightness) applyBrightness(data, fx.brightness * factor);
   // Contrast
@@ -160,6 +162,8 @@ export function applyEffects(imageData, fx, intensity = 100) {
   if (fx.temperature) applyTemperature(data, fx.temperature * factor);
   // Tint
   if (fx.tint) applyTint(data, fx.tint * factor);
+  // Color balance targets tonal regions like Photoshop's Color Balance adjustment.
+  if (fx.colorBalance) applyColorBalance(data, fx.colorBalance, factor);
   // Highlights/Shadows
   if (fx.highlights) applyHighlights(data, fx.highlights * factor);
   if (fx.shadows) applyShadows(data, fx.shadows * factor);
@@ -217,6 +221,9 @@ export function applyEffects(imageData, fx, intensity = 100) {
   if (fx.pixelSort) result = applyPixelSort(result, fx.pixelSort, factor);
   // Color reduction
   if (fx.colorReduce) result = applyColorReduction(result, fx.colorReduce, fx.dither);
+  if (fx.posterize) result = applyPosterize(result, fx.posterize);
+  if (fx.threshold) result = applyThreshold(result, fx.threshold);
+  if (fx.invert) result = applyInvert(result, factor);
   // Pixelate - scale with resolution
   if (fx.pixelate) result = applyPixelate(result, Math.round(fx.pixelate * factor * resScale));
   // Halftone/dot-matrix print texture should sit on top of the image.
@@ -334,6 +341,34 @@ function applyLevels(data, blackPoint, whitePoint, gammaValue) {
   }
 }
 
+function applyToneCurve(data, curve, intensity = 1) {
+  const controls = {
+    shadows: curve.shadows || 0,
+    darks: curve.darks || 0,
+    lights: curve.lights || 0,
+    highlights: curve.highlights || 0,
+  };
+
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = luminance(data, i) / 255;
+    const delta =
+      controls.shadows * bell(lum, 0.12, 0.18) +
+      controls.darks * bell(lum, 0.35, 0.22) +
+      controls.lights * bell(lum, 0.65, 0.22) +
+      controls.highlights * bell(lum, 0.88, 0.18);
+    const lift = delta * 1.85 * intensity;
+
+    data[i] = clamp(data[i] + lift);
+    data[i + 1] = clamp(data[i + 1] + lift);
+    data[i + 2] = clamp(data[i + 2] + lift);
+  }
+}
+
+function bell(value, center, width) {
+  const d = (value - center) / width;
+  return Math.exp(-d * d);
+}
+
 function applyContrast(data, val) {
   const f = (259 * (val * 2.55 + 255)) / (255 * (259 - val * 2.55));
   for (let i = 0; i < data.length; i += 4) {
@@ -384,6 +419,28 @@ function applyTint(data, val) {
   const t = val * 1.5;
   for (let i = 0; i < data.length; i += 4) {
     data[i+1] += t;
+  }
+}
+
+function applyColorBalance(data, balance, intensity = 1) {
+  const shadows = balance.shadows || {};
+  const midtones = balance.midtones || {};
+  const highlights = balance.highlights || {};
+
+  for (let i = 0; i < data.length; i += 4) {
+    const lum = luminance(data, i) / 255;
+    const weights = {
+      shadows: bell(lum, 0.18, 0.24),
+      midtones: bell(lum, 0.5, 0.28),
+      highlights: bell(lum, 0.82, 0.24),
+    };
+    const cyanRed = ((shadows.cyanRed || 0) * weights.shadows + (midtones.cyanRed || 0) * weights.midtones + (highlights.cyanRed || 0) * weights.highlights) * intensity;
+    const magentaGreen = ((shadows.magentaGreen || 0) * weights.shadows + (midtones.magentaGreen || 0) * weights.midtones + (highlights.magentaGreen || 0) * weights.highlights) * intensity;
+    const yellowBlue = ((shadows.yellowBlue || 0) * weights.shadows + (midtones.yellowBlue || 0) * weights.midtones + (highlights.yellowBlue || 0) * weights.highlights) * intensity;
+
+    data[i] = clamp(data[i] + cyanRed * 1.35);
+    data[i + 1] = clamp(data[i + 1] + magentaGreen * 1.35);
+    data[i + 2] = clamp(data[i + 2] + yellowBlue * 1.35);
   }
 }
 
@@ -789,6 +846,39 @@ function applyPixelate(imageData, size) {
     }
   }
   return new ImageData(d, w, h);
+}
+
+function applyInvert(imageData, intensity = 1) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const s = Math.min(1, Math.max(0, intensity));
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = mix(d[i], 255 - d[i], s);
+    d[i + 1] = mix(d[i + 1], 255 - d[i + 1], s);
+    d[i + 2] = mix(d[i + 2], 255 - d[i + 2], s);
+  }
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+function applyThreshold(imageData, threshold) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const t = Math.min(255, Math.max(0, threshold));
+  for (let i = 0; i < d.length; i += 4) {
+    const v = luminance(d, i) >= t ? 255 : 0;
+    d[i] = v; d[i + 1] = v; d[i + 2] = v;
+  }
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+function applyPosterize(imageData, levels) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const count = Math.max(2, Math.min(32, Math.round(levels)));
+  const step = 255 / (count - 1);
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = Math.round(d[i] / step) * step;
+    d[i + 1] = Math.round(d[i + 1] / step) * step;
+    d[i + 2] = Math.round(d[i + 2] / step) * step;
+  }
+  return new ImageData(d, imageData.width, imageData.height);
 }
 
 function applyHalftone(imageData, strength, colorMode) {

@@ -53,6 +53,26 @@ const SPLIT_TONE_CONTROLS = [
   { key: 'highlightSat', label: 'Highlight Sat', min: 0, max: 100, value: 0 },
   { key: 'balance', label: 'Balance', min: -100, max: 100, value: 0 },
 ];
+const CURVE_CONTROLS = [
+  { key: 'shadows', label: 'Shadows', min: -100, max: 100, value: 0 },
+  { key: 'darks', label: 'Darks', min: -100, max: 100, value: 0 },
+  { key: 'lights', label: 'Lights', min: -100, max: 100, value: 0 },
+  { key: 'highlights', label: 'Highlights', min: -100, max: 100, value: 0 },
+];
+const COLOR_BALANCE_RANGES = ['shadows', 'midtones', 'highlights'];
+const COLOR_BALANCE_CONTROLS = [
+  { key: 'cyanRed', label: 'Cyan / Red' },
+  { key: 'magentaGreen', label: 'Magenta / Green' },
+  { key: 'yellowBlue', label: 'Yellow / Blue' },
+];
+const RETOUCH_MODES = [
+  { id: 'dodge', label: 'Dodge' },
+  { id: 'burn', label: 'Burn' },
+  { id: 'blur', label: 'Blur' },
+  { id: 'sharpen', label: 'Sharpen' },
+  { id: 'saturate', label: 'Saturate' },
+  { id: 'desaturate', label: 'Desaturate' },
+];
 let stockImage = null;
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -674,6 +694,12 @@ async function handleGalleryAction(action, id) {
 }
 
 let crushBase = null;
+let retouchActive = false;
+let retouchMode = 'dodge';
+let retouchSize = 42;
+let retouchStrength = 35;
+let retouchPainting = false;
+let retouchBase = null;
 
 function buildAdjustPanel() {
   const items = [
@@ -773,6 +799,33 @@ function buildProPanel() {
     <section class="pro-card">
       <div class="pro-card-header">
         <div>
+          <h4>Curves</h4>
+          <p>Regional tone shaping</p>
+        </div>
+      </div>
+      <div class="curve-grid">
+        ${CURVE_CONTROLS.map(control => renderProSlider(control, 'curve')).join('')}
+      </div>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header">
+        <div>
+          <h4>Color Balance</h4>
+          <p>Shift shadows, midtones, and highlights</p>
+        </div>
+      </div>
+      <div class="color-balance-grid">
+        ${COLOR_BALANCE_RANGES.map(range => `
+          <div class="color-balance-range">
+            <h5>${range}</h5>
+            ${COLOR_BALANCE_CONTROLS.map(control => renderColorBalanceSlider(range, control)).join('')}
+          </div>
+        `).join('')}
+      </div>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header">
+        <div>
           <h4>HSL Color Mixer</h4>
           <p>Target individual color families</p>
         </div>
@@ -804,6 +857,15 @@ function renderProSlider(control, group) {
   `;
 }
 
+function renderColorBalanceSlider(range, control) {
+  return `
+    <label class="pro-slider">
+      <span>${control.label}<strong id="cb-val-${range}-${control.key}">0</strong></span>
+      <input type="range" min="-100" max="100" value="0" data-color-balance-range="${range}" data-color-balance-key="${control.key}" />
+    </label>
+  `;
+}
+
 function renderHslGroup(color) {
   return `
     <div class="hsl-row" data-hsl-row="${color}">
@@ -825,6 +887,28 @@ function handleProInput(e) {
     const value = parseInt(target.value, 10);
     setState({ adjustments: { ...getState().adjustments, [key]: value } });
     $(`pro-val-tone-${key}`).textContent = value;
+    scheduleApply();
+  } else if (target.matches('[data-pro-group="curve"]')) {
+    const key = target.dataset.proKey;
+    const value = parseInt(target.value, 10);
+    const toneCurve = { ...(getState().adjustments.toneCurve || {}), [key]: value };
+    setState({ adjustments: { ...getState().adjustments, toneCurve } });
+    $(`pro-val-curve-${key}`).textContent = value;
+    scheduleApply();
+  } else if (target.matches('[data-color-balance-range]')) {
+    const range = target.dataset.colorBalanceRange;
+    const key = target.dataset.colorBalanceKey;
+    const value = parseInt(target.value, 10);
+    const current = getState().adjustments.colorBalance || {};
+    const colorBalance = {
+      ...current,
+      [range]: {
+        ...(current[range] || {}),
+        [key]: value,
+      },
+    };
+    setState({ adjustments: { ...getState().adjustments, colorBalance } });
+    $(`cb-val-${range}-${key}`).textContent = value;
     scheduleApply();
   } else if (target.matches('[data-pro-group="split"]')) {
     const key = target.dataset.proKey;
@@ -926,6 +1010,8 @@ function resetProAdjustments() {
   for (const control of PRO_TONE_CONTROLS) adjustments[control.key] = control.value;
   delete adjustments.hsl;
   delete adjustments.splitTone;
+  delete adjustments.toneCurve;
+  delete adjustments.colorBalance;
   setState({ adjustments });
   syncAdjustmentControls();
   scheduleApply();
@@ -953,6 +1039,22 @@ function syncAdjustmentControls() {
     if (input) input.value = value;
     const label = $(`pro-val-split-${control.key}`);
     if (label) label.textContent = value;
+  }
+  for (const control of CURVE_CONTROLS) {
+    const value = adjustments.toneCurve?.[control.key] ?? control.value;
+    const input = document.querySelector(`[data-pro-group="curve"][data-pro-key="${control.key}"]`);
+    if (input) input.value = value;
+    const label = $(`pro-val-curve-${control.key}`);
+    if (label) label.textContent = value;
+  }
+  for (const range of COLOR_BALANCE_RANGES) {
+    for (const control of COLOR_BALANCE_CONTROLS) {
+      const value = adjustments.colorBalance?.[range]?.[control.key] ?? 0;
+      const input = document.querySelector(`[data-color-balance-range="${range}"][data-color-balance-key="${control.key}"]`);
+      if (input) input.value = value;
+      const label = $(`cb-val-${range}-${control.key}`);
+      if (label) label.textContent = value;
+    }
   }
   for (const color of HSL_COLORS) {
     for (const channel of ['h', 's', 'l']) {
@@ -991,6 +1093,223 @@ function updateHistogram(imageData) {
       context.fillRect(x, canvas.height - barHeight, Math.max(1, canvas.width / 256), barHeight);
     }
   });
+}
+
+function applyImageOperation(message, operation) {
+  const state = getState();
+  if (!state.currentImageData) return;
+  const result = operation(cloneImageData(state.currentImageData));
+  setState({ currentImageData: result });
+  pushHistory(result);
+  renderCanvas(result);
+  const newHist = [...getState().history];
+  newHist[0] = result;
+  setState({ history: newHist, activePreset: null });
+  showToast(message);
+}
+
+function invertImageData(imageData) {
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = 255 - d[i];
+    d[i + 1] = 255 - d[i + 1];
+    d[i + 2] = 255 - d[i + 2];
+  }
+  return imageData;
+}
+
+function thresholdImageData(imageData, threshold) {
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722 >= threshold ? 255 : 0;
+    d[i] = v; d[i + 1] = v; d[i + 2] = v;
+  }
+  return imageData;
+}
+
+function posterizeImageData(imageData, levels) {
+  const d = imageData.data;
+  const step = 255 / (levels - 1);
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = Math.round(d[i] / step) * step;
+    d[i + 1] = Math.round(d[i + 1] / step) * step;
+    d[i + 2] = Math.round(d[i + 2] / step) * step;
+  }
+  return imageData;
+}
+
+function autoColor() {
+  const source = getState().currentImageData || getState().history[0];
+  if (!source) { showToast('Load a photo first'); return; }
+  const d = source.data;
+  let r = 0, g = 0, b = 0, count = 0;
+  for (let i = 0; i < d.length; i += 16) {
+    r += d[i]; g += d[i + 1]; b += d[i + 2]; count++;
+  }
+  r /= count; g /= count; b /= count;
+  const avg = (r + g + b) / 3;
+  const temperature = Math.round((b - r) / 3);
+  const tint = Math.round((avg - g) / 2.8);
+  const adjustments = {
+    ...getState().adjustments,
+    temperature: Math.max(-45, Math.min(45, temperature)),
+    tint: Math.max(-45, Math.min(45, tint)),
+    vibrance: Math.max(getState().adjustments.vibrance || 0, 10),
+  };
+  setState({ adjustments });
+  syncAdjustmentControls();
+  scheduleApply();
+  showToast('Auto color applied');
+}
+
+function openRetouchOptions() {
+  retouchActive = true;
+  const options = $('tool-options');
+  options.classList.remove('hidden');
+  options.innerHTML = `
+    <div class="retouch-panel">
+      <div class="tool-options-header">
+        <strong>Retouch Brush</strong>
+        <button id="btn-retouch-close" class="topbar-btn" aria-label="Close retouch">×</button>
+      </div>
+      <div class="retouch-modes">
+        ${RETOUCH_MODES.map(mode => `<button class="retouch-mode${mode.id === retouchMode ? ' active' : ''}" data-retouch-mode="${mode.id}">${mode.label}</button>`).join('')}
+      </div>
+      <label class="pro-slider"><span>Size<strong id="retouch-size-value">${retouchSize}</strong></span><input id="retouch-size" type="range" min="8" max="140" value="${retouchSize}" /></label>
+      <label class="pro-slider"><span>Strength<strong id="retouch-strength-value">${retouchStrength}</strong></span><input id="retouch-strength" type="range" min="5" max="100" value="${retouchStrength}" /></label>
+      <p class="retouch-help">Paint directly on the image. Undo works after each stroke.</p>
+    </div>
+  `;
+  options.querySelectorAll('[data-retouch-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      retouchMode = btn.dataset.retouchMode;
+      options.querySelectorAll('.retouch-mode').forEach(item => item.classList.toggle('active', item === btn));
+    });
+  });
+  $('retouch-size')?.addEventListener('input', e => {
+    retouchSize = parseInt(e.target.value, 10);
+    $('retouch-size-value').textContent = retouchSize;
+  });
+  $('retouch-strength')?.addEventListener('input', e => {
+    retouchStrength = parseInt(e.target.value, 10);
+    $('retouch-strength-value').textContent = retouchStrength;
+  });
+  $('btn-retouch-close')?.addEventListener('click', closeRetouchOptions);
+  showToast('Paint on the photo to retouch');
+}
+
+function closeRetouchOptions() {
+  retouchActive = false;
+  retouchPainting = false;
+  retouchBase = null;
+  $('tool-options')?.classList.add('hidden');
+}
+
+function getCanvasPoint(e) {
+  const rect = mainCanvas.getBoundingClientRect();
+  return {
+    x: Math.round((e.clientX - rect.left) * mainCanvas.width / rect.width),
+    y: Math.round((e.clientY - rect.top) * mainCanvas.height / rect.height),
+  };
+}
+
+function startRetouchStroke(e) {
+  if (!retouchActive || !getState().currentImageData) return;
+  e.preventDefault();
+  retouchPainting = true;
+  retouchBase = cloneImageData(getState().currentImageData);
+  mainCanvas.setPointerCapture?.(e.pointerId);
+  paintRetouch(e);
+}
+
+function moveRetouchStroke(e) {
+  if (!retouchActive || !retouchPainting) return;
+  e.preventDefault();
+  paintRetouch(e);
+}
+
+function endRetouchStroke() {
+  if (!retouchPainting) return;
+  retouchPainting = false;
+  const data = getState().currentImageData;
+  if (data) {
+    pushHistory(data);
+    const history = [...getState().history];
+    history[0] = cloneImageData(data);
+    setState({ history, activePreset: null });
+  }
+  retouchBase = null;
+}
+
+function paintRetouch(e) {
+  const state = getState();
+  const current = state.currentImageData;
+  if (!current) return;
+  const point = getCanvasPoint(e);
+  const data = cloneImageData(current);
+  applyRetouchBrush(data, point.x, point.y, retouchSize, retouchStrength, retouchMode, retouchBase || current);
+  setState({ currentImageData: data });
+  renderCanvas(data);
+}
+
+function applyRetouchBrush(imageData, cx, cy, size, strength, mode, baseImage) {
+  const d = imageData.data;
+  const base = baseImage.data;
+  const w = imageData.width;
+  const h = imageData.height;
+  const radius = Math.max(2, Math.round(size / 2));
+  const amount = strength / 100;
+  const x0 = Math.max(0, cx - radius), x1 = Math.min(w - 1, cx + radius);
+  const y0 = Math.max(0, cy - radius), y1 = Math.min(h - 1, cy + radius);
+
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cx, dy = y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > radius) continue;
+      const feather = (1 - dist / radius) * amount;
+      const i = (y * w + x) * 4;
+      let r = d[i], g = d[i + 1], b = d[i + 2];
+
+      if (mode === 'dodge') {
+        r += 45 * feather; g += 45 * feather; b += 45 * feather;
+      } else if (mode === 'burn') {
+        r -= 45 * feather; g -= 45 * feather; b -= 45 * feather;
+      } else if (mode === 'saturate' || mode === 'desaturate') {
+        const gray = r * 0.2126 + g * 0.7152 + b * 0.0722;
+        const sat = mode === 'saturate' ? 1 + feather : 1 - feather;
+        r = gray + (r - gray) * sat;
+        g = gray + (g - gray) * sat;
+        b = gray + (b - gray) * sat;
+      } else if (mode === 'blur' || mode === 'sharpen') {
+        const avg = sampleLocalAverage(base, w, h, x, y, Math.max(1, Math.round(radius / 8)));
+        if (mode === 'blur') {
+          r = r * (1 - feather) + avg[0] * feather;
+          g = g * (1 - feather) + avg[1] * feather;
+          b = b * (1 - feather) + avg[2] * feather;
+        } else {
+          r += (r - avg[0]) * feather * 1.4;
+          g += (g - avg[1]) * feather * 1.4;
+          b += (b - avg[2]) * feather * 1.4;
+        }
+      }
+
+      d[i] = Math.min(255, Math.max(0, r));
+      d[i + 1] = Math.min(255, Math.max(0, g));
+      d[i + 2] = Math.min(255, Math.max(0, b));
+    }
+  }
+}
+
+function sampleLocalAverage(data, w, h, cx, cy, radius) {
+  let r = 0, g = 0, b = 0, count = 0;
+  for (let y = Math.max(0, cy - radius); y <= Math.min(h - 1, cy + radius); y++) {
+    for (let x = Math.max(0, cx - radius); x <= Math.min(w - 1, cx + radius); x++) {
+      const i = (y * w + x) * 4;
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+    }
+  }
+  return [r / count, g / count, b / count];
 }
 
 function performPixelCrush(val, source) {
@@ -1038,10 +1357,17 @@ function performPixelCrush(val, source) {
 function buildToolsPanel() {
   const tools = [
     { id:'crop', label:'Crop', icon:'✂️' },
+    { id:'auto-tone', label:'Auto Tone', icon:'◐' },
+    { id:'auto-color', label:'Auto Color', icon:'🎨' },
+    { id:'smart-sharpen', label:'Smart Sharp', icon:'◆' },
     { id:'rotate-cw', label:'Rotate →', icon:'↻' },
     { id:'rotate-ccw', label:'Rotate ←', icon:'↺' },
     { id:'flip-h', label:'Flip H', icon:'↔️' },
     { id:'flip-v', label:'Flip V', icon:'↕️' },
+    { id:'invert', label:'Invert', icon:'◩' },
+    { id:'threshold', label:'Threshold', icon:'◧' },
+    { id:'posterize', label:'Posterize', icon:'▦' },
+    { id:'retouch', label:'Retouch', icon:'🖌️' },
     { id:'timestamp', label:'Date Stamp', icon:'📅' },
     { id:'border', label:'Film Border', icon:'🖼️' },
     { id:'favorite-current', label:'Favorite', icon:'⭐' },
@@ -1079,6 +1405,20 @@ function handleTool(tool) {
 
   if (tool === 'crop') {
     startCrop();
+  } else if (tool === 'auto-tone') {
+    autoEnhance();
+  } else if (tool === 'auto-color') {
+    autoColor();
+  } else if (tool === 'smart-sharpen') {
+    applyImageOperation('Smart sharpen applied', data => applySharpen(data, 28));
+  } else if (tool === 'invert') {
+    applyImageOperation('Inverted', invertImageData);
+  } else if (tool === 'threshold') {
+    applyImageOperation('Threshold applied', data => thresholdImageData(data, 128));
+  } else if (tool === 'posterize') {
+    applyImageOperation('Posterized', data => posterizeImageData(data, 6));
+  } else if (tool === 'retouch') {
+    openRetouchOptions();
   } else if (tool === 'rotate-cw' || tool === 'rotate-ccw') {
     const oc = createWorkCanvas(h, w);
     const octx = oc.getContext('2d');
@@ -1390,6 +1730,9 @@ function bindEvents() {
   $('canvas-area')?.addEventListener('click', e => {
     if (e.target.closest('.empty-state') || e.target.closest('.canvas-container')) sidePanel.classList.remove('open');
   });
+  mainCanvas.addEventListener('pointerdown', startRetouchStroke);
+  mainCanvas.addEventListener('pointermove', moveRetouchStroke);
+  window.addEventListener('pointerup', endRetouchStroke);
 
   document.addEventListener('dragover', e => e.preventDefault());
   document.addEventListener('drop', e => {
