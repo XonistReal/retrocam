@@ -11,6 +11,7 @@ const canvasContainer = $('canvas-container');
 const mainCanvas = $('main-canvas');
 const ctx = mainCanvas.getContext('2d', { willReadFrequently: true });
 const fileInput = $('file-input');
+const cameraFileInput = $('camera-file-input');
 const categoryPills = $('category-pills');
 const presetGrid = $('preset-grid');
 const intensityBar = $('intensity-bar');
@@ -20,10 +21,64 @@ const adjustSliders = $('adjust-sliders');
 const toolsGrid = $('tools-grid');
 const sidePanel = $('side-panel');
 
-const STOCK_IMAGE_URL = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=256&h=256&auto=format&fit=crop';
+const STOCK_IMAGE_URL = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=90&w=960&h=960&auto=format&fit=crop';
+const PRESET_PREVIEW_RENDER_SIZE = 512;
+const PRESET_PREVIEW_REFERENCE_WIDTH = 1200;
+const PRESET_PREVIEW_BATCH_SIZE = 6;
+const MOBILE_DEVICE_RE = /Android|iPhone|iPad|iPod/i;
+const isMobileDevice = () => MOBILE_DEVICE_RE.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
+const STORAGE_KEYS = {
+  favorites: 'retrolens:favorites',
+  customPresets: 'retrolens:customPresets',
+  defaultPreset: 'retrolens:defaultPreset',
+  gallery: 'retrolens:gallery',
+};
+const APP_CATEGORIES = [
+  ...CATEGORIES,
+  { id: 'favorites', label: 'Favorites', icon: '⭐' },
+  { id: 'custom', label: 'Mine', icon: '💽' },
+];
+const HSL_COLORS = ['red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'magenta'];
+const PRO_TONE_CONTROLS = [
+  { key: 'blackPoint', label: 'Black Point', min: 0, max: 35, value: 0 },
+  { key: 'whitePoint', label: 'White Point', min: 65, max: 120, value: 100 },
+  { key: 'gamma', label: 'Gamma', min: -100, max: 100, value: 0 },
+  { key: 'clarity', label: 'Clarity', min: -100, max: 100, value: 0 },
+  { key: 'dehaze', label: 'Dehaze', min: -100, max: 100, value: 0 },
+];
+const SPLIT_TONE_CONTROLS = [
+  { key: 'shadowHue', label: 'Shadow Hue', min: 0, max: 360, value: 220 },
+  { key: 'shadowSat', label: 'Shadow Sat', min: 0, max: 100, value: 0 },
+  { key: 'highlightHue', label: 'Highlight Hue', min: 0, max: 360, value: 42 },
+  { key: 'highlightSat', label: 'Highlight Sat', min: 0, max: 100, value: 0 },
+  { key: 'balance', label: 'Balance', min: -100, max: 100, value: 0 },
+];
+const CURVE_CONTROLS = [
+  { key: 'shadows', label: 'Shadows', min: -100, max: 100, value: 0 },
+  { key: 'darks', label: 'Darks', min: -100, max: 100, value: 0 },
+  { key: 'lights', label: 'Lights', min: -100, max: 100, value: 0 },
+  { key: 'highlights', label: 'Highlights', min: -100, max: 100, value: 0 },
+];
+const COLOR_BALANCE_RANGES = ['shadows', 'midtones', 'highlights'];
+const COLOR_BALANCE_CONTROLS = [
+  { key: 'cyanRed', label: 'Cyan / Red' },
+  { key: 'magentaGreen', label: 'Magenta / Green' },
+  { key: 'yellowBlue', label: 'Yellow / Blue' },
+];
+const RETOUCH_MODES = [
+  { id: 'dodge', label: 'Dodge' },
+  { id: 'burn', label: 'Burn' },
+  { id: 'blur', label: 'Blur' },
+  { id: 'sharpen', label: 'Sharpen' },
+  { id: 'saturate', label: 'Saturate' },
+  { id: 'desaturate', label: 'Desaturate' },
+];
 let stockImage = null;
 
 window.addEventListener('DOMContentLoaded', () => {
+  syncViewportMetrics();
+  registerServiceWorker();
+  loadPersonalization();
   setTimeout(() => {
     splash.classList.add('fade-out');
     shell.classList.remove('hidden');
@@ -32,17 +87,181 @@ window.addEventListener('DOMContentLoaded', () => {
   buildCategories();
   buildPresetGrid();
   buildAdjustPanel();
+  buildProPanel();
   buildToolsPanel();
+  renderGallery();
   bindEvents();
   loadStockImage();
+  applyDefaultPreset();
 });
+
+window.addEventListener('resize', syncViewportMetrics);
+window.addEventListener('orientationchange', syncViewportMetrics);
+window.visualViewport?.addEventListener('resize', syncViewportMetrics);
+
+function syncViewportMetrics() {
+  const height = window.visualViewport?.height || window.innerHeight;
+  document.documentElement.style.setProperty('--app-height', `${Math.round(height)}px`);
+}
+
+function createWorkCanvas(width, height) {
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+
+  if (typeof OffscreenCanvas === 'function') {
+    return new OffscreenCanvas(w, h);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  return canvas;
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [header, data] = dataUrl.split(',');
+  const mime = header.match(/:(.*?);/)?.[1] || 'image/png';
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return new Blob([bytes], { type: mime });
+}
+
+function canvasToBlob(canvas, type = 'image/png', quality) {
+  if (typeof canvas.convertToBlob === 'function') {
+    return canvas.convertToBlob({ type, quality });
+  }
+
+  if (typeof canvas.toBlob === 'function') {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('Canvas export failed'));
+      }, type, quality);
+    });
+  }
+
+  return Promise.resolve(dataUrlToBlob(canvas.toDataURL(type, quality)));
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function canvasToDataUrl(canvas, type, quality) {
+  if (typeof canvas.toDataURL === 'function') {
+    return canvas.toDataURL(type, quality);
+  }
+
+  return blobToDataUrl(await canvasToBlob(canvas, type, quality));
+}
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(err => {
+      console.warn('Service worker registration failed', err);
+    });
+  });
+}
+
+function readJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (err) {
+    console.warn(`Could not read ${key}`, err);
+    return fallback;
+  }
+}
+
+function writeJson(key, value) {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    console.warn(`Could not persist ${key}`, err);
+    showToast('Storage is full on this device');
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#039;');
+}
+
+function loadPersonalization() {
+  const favoritePresets = readJson(STORAGE_KEYS.favorites, []);
+  const customPresets = readJson(STORAGE_KEYS.customPresets, []);
+  const defaultPreset = readJson(STORAGE_KEYS.defaultPreset, null);
+  const galleryItems = readJson(STORAGE_KEYS.gallery, []);
+  setState({ favoritePresets, customPresets, defaultPreset, galleryItems });
+}
+
+function persistPersonalization() {
+  const state = getState();
+  writeJson(STORAGE_KEYS.favorites, state.favoritePresets || []);
+  writeJson(STORAGE_KEYS.customPresets, state.customPresets || []);
+  writeJson(STORAGE_KEYS.defaultPreset, state.defaultPreset || null);
+  writeJson(STORAGE_KEYS.gallery, state.galleryItems || []);
+}
+
+function getAllPresets() {
+  return [...PRESETS, ...getState().customPresets];
+}
+
+function findPreset(id) {
+  return getAllPresets().find(preset => preset.id === id);
+}
+
+function withPresetProfile(preset) {
+  if (!preset) return null;
+  return {
+    ...preset,
+    fx: {
+      ...preset.fx,
+      profile: preset.fx.profile || preset.profile || preset.cat || 'custom',
+    },
+  };
+}
+
+function getActivePreset() {
+  const activePreset = getState().activePreset;
+  return activePreset ? withPresetProfile(findPreset(activePreset)) : null;
+}
+
+function getActiveFx(extraAdjustments = {}) {
+  const state = getState();
+  return mergePresetEffects({ ...state.adjustments, ...extraAdjustments }, getActivePreset(), state.presetIntensity);
+}
+
+function getPreviewFx(fx) {
+  const { jpegQ, jpegPasses, dust, scratches, datamosh, pixelSort, ...previewFx } = fx;
+  return previewFx;
+}
+
+function getCurrentPresetName() {
+  return getActivePreset()?.name || 'Clean';
+}
 
 async function loadStockImage() {
   const img = new Image();
   img.crossOrigin = 'Anonymous';
   img.onload = () => {
     stockImage = img;
-    if (!getState().imageLoaded) generateThumbnails(PRESETS);
+    if (!getState().imageLoaded) generateThumbnails(getAllPresets());
   };
   img.src = STOCK_IMAGE_URL;
 }
@@ -50,14 +269,19 @@ async function loadStockImage() {
 function loadImageFromFile(file) {
   const reader = new FileReader();
   reader.onload = e => {
-    const img = new Image();
-    img.onload = () => {
-      setState({ originalImage: img, imageLoaded: true });
-      initCanvas(img);
-    };
-    img.src = e.target.result;
+    loadImageFromDataUrl(e.target.result);
   };
   reader.readAsDataURL(file);
+}
+
+function loadImageFromDataUrl(dataUrl) {
+  const img = new Image();
+  img.onload = () => {
+    setState({ originalImage: img, imageLoaded: true });
+    initCanvas(img);
+  };
+  img.onerror = () => showToast('Could not load photo');
+  img.src = dataUrl;
 }
 
 function initCanvas(img) {
@@ -74,15 +298,58 @@ function initCanvas(img) {
   pushHistory(imageData);
   emptyState.classList.add('hidden');
   canvasContainer.classList.remove('hidden');
+  if (getState().activePreset) scheduleApply();
+  generateThumbnails(getAllPresets());
   showToast('Photo loaded!');
 }
 
 function renderCanvas(imageData) {
   if (!imageData) return;
   ctx.putImageData(imageData, 0, 0);
+  updateHistogram(imageData);
+}
+
+function cloneImageData(imageData) {
+  return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+}
+
+function mergePresetEffects(baseFx, preset, intensity = 100) {
+  const fx = { ...baseFx };
+  if (!preset) return fx;
+
+  const amount = intensity / 100;
+  for (const [key, value] of Object.entries(preset.fx)) {
+    if (typeof value === 'number') {
+      fx[key] = (typeof fx[key] === 'number' ? fx[key] : 0) + value * amount;
+    } else if (amount > 0) {
+      fx[key] = value;
+    }
+  }
+
+  return fx;
+}
+
+async function renderEffectsToImageData(sourceData, fx, canvas = createWorkCanvas(sourceData.width, sourceData.height), context = null) {
+  let data = cloneImageData(sourceData);
+  if (fx.sharpness > 0) data = applySharpen(data, fx.sharpness);
+  if (fx.sharpness < 0 || fx.blur > 0) data = applyBlur(data, Math.abs(fx.sharpness || 0) / 5 + (fx.blur || 0) / 3);
+  data = applyEffects(data, fx, 100);
+
+  if (canvas.width !== data.width) canvas.width = data.width;
+  if (canvas.height !== data.height) canvas.height = data.height;
+  const canvasContext = context || canvas.getContext('2d');
+
+  if (fx.jpegQ) {
+    canvasContext.putImageData(data, 0, 0);
+    data = await applyJPEGCompression(canvas, fx.jpegQ, fx.jpegPasses || 1);
+  }
+
+  canvasContext.putImageData(data, 0, 0);
+  return data;
 }
 
 let applyTimeout = null;
+let thumbnailRunId = 0;
 function scheduleApply() {
   clearTimeout(applyTimeout);
   applyTimeout = setTimeout(() => applyAll(), 50);
@@ -92,27 +359,14 @@ async function applyAll() {
   const state = getState();
   if (!state.imageLoaded || !state.history[0]) return;
   const original = state.history[0];
-  let data = new ImageData(new Uint8ClampedArray(original.data), original.width, original.height);
-  const preset = state.activePreset ? PRESETS.find(p => p.id === state.activePreset) : null;
-  const fx = { ...state.adjustments };
-  if (preset) {
-    for (const [k, v] of Object.entries(preset.fx)) {
-      fx[k] = (fx[k] || 0) + v * (state.presetIntensity / 100);
-    }
-  }
-  if (fx.sharpness > 0) data = applySharpen(data, fx.sharpness);
-  if (fx.sharpness < 0 || fx.blur > 0) data = applyBlur(data, Math.abs(fx.sharpness || 0) / 5 + (fx.blur || 0) / 3);
-  data = applyEffects(data, fx, 100);
-  if (fx.jpegQ) {
-    ctx.putImageData(data, 0, 0);
-    data = await applyJPEGCompression(mainCanvas, fx.jpegQ, fx.jpegPasses || 1);
-  }
+  const fx = getActiveFx();
+  const data = await renderEffectsToImageData(original, fx, mainCanvas, ctx);
   setState({ currentImageData: data });
   renderCanvas(data);
 }
 
 function buildCategories() {
-  categoryPills.innerHTML = CATEGORIES.map(c =>
+  categoryPills.innerHTML = APP_CATEGORIES.map(c =>
     `<button class="cat-pill${c.id === 'all' ? ' active' : ''}" data-cat="${c.id}">${c.icon} ${c.label}</button>`
   ).join('');
 
@@ -151,58 +405,88 @@ function buildCategories() {
   });
 }
 
-function buildPresetGrid() { renderPresets(PRESETS); }
+function buildPresetGrid() { renderPresets(getAllPresets()); }
 
 function renderPresets(list) {
+  const state = getState();
+  presetGrid.querySelectorAll('[data-thumb-url]').forEach(card => URL.revokeObjectURL(card.dataset.thumbUrl));
   presetGrid.innerHTML = list.map(p => {
-    const cat = CATEGORIES.find(c => c.id === p.cat);
-    return `<div class="preset-card" data-id="${p.id}" title="${p.name}">
-      <div class="preset-card-label">${p.name}</div>
-      <div class="preset-card-icon">${cat ? cat.icon : '✨'}</div>
+    const cat = APP_CATEGORIES.find(c => c.id === p.cat);
+    const isFavorite = state.favoritePresets.includes(p.id);
+    const isDefault = state.defaultPreset === p.id;
+    const isActive = state.activePreset === p.id;
+    const safeName = escapeHtml(p.name);
+    return `<div class="preset-card${isActive ? ' active' : ''}" data-id="${p.id}" title="${safeName}">
+      <div class="preset-card-actions">
+        <button class="preset-action${isFavorite ? ' active' : ''}" data-preset-action="favorite" aria-label="${isFavorite ? 'Unfavorite' : 'Favorite'}">${isFavorite ? '★' : '☆'}</button>
+        <button class="preset-action${isDefault ? ' active' : ''}" data-preset-action="default" aria-label="Use as default camera preset">●</button>
+      </div>
+      <div class="preset-card-label">${safeName}</div>
+      <div class="preset-card-icon">${p.cat === 'custom' ? '💽' : (cat ? cat.icon : '✨')}</div>
     </div>`;
   }).join('');
-  if (getState().imageLoaded) generateThumbnails(list);
+  if (getState().imageLoaded || stockImage) generateThumbnails(list);
 }
 
-function generateThumbnails(list) {
+async function generateThumbnails(list) {
+  const runId = ++thumbnailRunId;
   const state = getState();
   const original = state.imageLoaded ? state.history[0] : stockImage;
   if (!original) return;
 
-  const thumbSize = 80;
+  const previewSize = PRESET_PREVIEW_RENDER_SIZE;
   let tw, th;
   
   if (state.imageLoaded) {
-    const ratio = Math.min(thumbSize / original.width, thumbSize / original.height);
+    const ratio = Math.min(previewSize / original.width, previewSize / original.height, 1);
     tw = Math.round(original.width * ratio);
     th = Math.round(original.height * ratio);
   } else {
-    tw = thumbSize; th = thumbSize;
+    tw = previewSize; th = previewSize;
   }
 
-  list.forEach(preset => {
-    const card = presetGrid.querySelector(`[data-id="${preset.id}"]`);
-    if (!card) return;
-    try {
-      const smallData = downscaleImageData(original, tw, th);
-      const result = applyEffects(smallData, preset.fx, 100);
-      const oc = new OffscreenCanvas(tw, th);
-      oc.getContext('2d').putImageData(result, 0, 0);
-      oc.convertToBlob({ type: 'image/jpeg', quality: 0.7 }).then(blob => {
-        card.style.backgroundImage = `url(${URL.createObjectURL(blob)})`;
-        card.style.backgroundSize = 'cover';
-        card.style.backgroundPosition = 'center';
-      });
-    } catch(e) { console.warn('Thumbnail err', e); }
-  });
+  const previewData = downscaleImageData(original, tw, th);
+  const referenceWidth = state.imageLoaded
+    ? Math.max(PRESET_PREVIEW_REFERENCE_WIDTH, original.width)
+    : PRESET_PREVIEW_REFERENCE_WIDTH;
+
+  for (let i = 0; i < list.length; i += PRESET_PREVIEW_BATCH_SIZE) {
+    if (runId !== thumbnailRunId) return;
+    const batch = list.slice(i, i + PRESET_PREVIEW_BATCH_SIZE);
+    await Promise.all(batch.map(preset => renderPresetThumbnail(preset, previewData, referenceWidth, runId)));
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+}
+
+async function renderPresetThumbnail(preset, previewData, referenceWidth, runId) {
+  const card = presetGrid.querySelector(`[data-id="${preset.id}"]`);
+  if (!card || runId !== thumbnailRunId) return;
+  try {
+    const oc = createWorkCanvas(previewData.width, previewData.height);
+    const fx = {
+      ...withPresetProfile(preset).fx,
+      previewReferenceWidth: referenceWidth,
+    };
+    await renderEffectsToImageData(previewData, fx, oc);
+    if (runId !== thumbnailRunId) return;
+    const blob = await canvasToBlob(oc, 'image/jpeg', 0.88);
+    const url = URL.createObjectURL(blob);
+    if (card.dataset.thumbUrl) URL.revokeObjectURL(card.dataset.thumbUrl);
+    card.dataset.thumbUrl = url;
+    card.style.backgroundImage = `url(${url})`;
+    card.style.backgroundSize = 'cover';
+    card.style.backgroundPosition = 'center';
+  } catch(e) {
+    console.warn('Thumbnail err', e);
+  }
 }
 
 function downscaleImageData(source, tw, th) {
-  const oc = new OffscreenCanvas(tw, th);
+  const oc = createWorkCanvas(tw, th);
   const ctx = oc.getContext('2d');
   
   if (source instanceof ImageData) {
-    const tempOc = new OffscreenCanvas(source.width, source.height);
+    const tempOc = createWorkCanvas(source.width, source.height);
     tempOc.getContext('2d').putImageData(source, 0, 0);
     ctx.drawImage(tempOc, 0, 0, tw, th);
   } else {
@@ -216,13 +500,206 @@ function downscaleImageData(source, tw, th) {
 function filterPresets() {
   const state = getState();
   const search = ($('preset-search')?.value || '').toLowerCase();
-  let filtered = PRESETS;
-  if (state.activeCategory !== 'all') filtered = filtered.filter(p => p.cat === state.activeCategory);
+  let filtered = getAllPresets();
+  if (state.activeCategory === 'favorites') {
+    filtered = filtered.filter(p => state.favoritePresets.includes(p.id));
+  } else if (state.activeCategory !== 'all') {
+    filtered = filtered.filter(p => p.cat === state.activeCategory);
+  }
   if (search) filtered = filtered.filter(p => p.name.toLowerCase().includes(search));
   renderPresets(filtered);
 }
 
+function applyDefaultPreset() {
+  const defaultPreset = getState().defaultPreset;
+  if (!defaultPreset || !findPreset(defaultPreset)) return;
+  setState({ activePreset: defaultPreset, presetIntensity: 100 });
+  intensityBar.classList.remove('hidden');
+  intensitySlider.value = 100;
+  intensityValue.textContent = '100%';
+  filterPresets();
+}
+
+function selectPreset(id) {
+  const state = getState();
+  presetGrid.querySelectorAll('.preset-card').forEach(c => c.classList.remove('active'));
+  if (state.activePreset === id) {
+    setState({ activePreset: null });
+    intensityBar.classList.add('hidden');
+  } else {
+    presetGrid.querySelector(`[data-id="${id}"]`)?.classList.add('active');
+    setState({ activePreset: id, presetIntensity: 100 });
+    intensityBar.classList.remove('hidden');
+    intensitySlider.value = 100;
+    intensityValue.textContent = '100%';
+  }
+  scheduleApply();
+  renderCameraPresetStrip();
+}
+
+function toggleFavoritePreset(id) {
+  const state = getState();
+  const favoritePresets = state.favoritePresets.includes(id)
+    ? state.favoritePresets.filter(item => item !== id)
+    : [...state.favoritePresets, id];
+  setState({ favoritePresets });
+  persistPersonalization();
+  filterPresets();
+  renderCameraPresetStrip();
+}
+
+function setDefaultPreset(id) {
+  const defaultPreset = getState().defaultPreset === id ? null : id;
+  setState({ defaultPreset });
+  persistPersonalization();
+  filterPresets();
+  renderCameraPresetStrip();
+  showToast(defaultPreset ? 'Default camera preset saved' : 'Default preset cleared');
+}
+
+function openCustomPresetModal() {
+  $('custom-preset-modal')?.classList.remove('hidden');
+  const nameInput = $('custom-preset-name');
+  if (nameInput) {
+    nameInput.value = getCurrentPresetName() === 'Clean' ? 'My preset' : `${getCurrentPresetName()} Custom`;
+    nameInput.focus();
+    nameInput.select();
+  }
+}
+
+function closeCustomPresetModal() {
+  $('custom-preset-modal')?.classList.add('hidden');
+}
+
+function saveCustomPreset() {
+  const name = ($('custom-preset-name')?.value || '').trim() || 'My preset';
+  const fx = getActiveFx();
+  if (!fx.profile) fx.profile = 'custom';
+  const customPreset = {
+    id: `custom_${Date.now()}`,
+    name,
+    cat: 'custom',
+    profile: fx.profile || 'custom',
+    fx,
+  };
+  const customPresets = [customPreset, ...getState().customPresets].slice(0, 40);
+  setState({ customPresets, activePreset: customPreset.id, presetIntensity: 100, activeCategory: 'custom' });
+  persistPersonalization();
+  closeCustomPresetModal();
+  categoryPills.querySelectorAll('.cat-pill').forEach(p => p.classList.toggle('active', p.dataset.cat === 'custom'));
+  filterPresets();
+  renderCameraPresetStrip();
+  showToast('Custom preset saved');
+}
+
+function openGalleryModal() {
+  renderGallery();
+  $('gallery-modal')?.classList.remove('hidden');
+}
+
+function closeGalleryModal() {
+  $('gallery-modal')?.classList.add('hidden');
+}
+
+async function compactDataUrl(dataUrl, maxDim = 1200) {
+  const img = await loadImageElement(dataUrl);
+  const ratio = Math.min(1, maxDim / img.width, maxDim / img.height);
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(img.width * ratio));
+  canvas.height = Math.max(1, Math.round(img.height * ratio));
+  canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.86);
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = reject;
+    img.src = src;
+  });
+}
+
+async function addGalleryItem(dataUrl, meta = {}) {
+  const compactUrl = await compactDataUrl(dataUrl);
+  const item = {
+    id: `shot_${Date.now()}`,
+    url: compactUrl,
+    title: meta.title || getCurrentPresetName(),
+    preset: meta.preset || getCurrentPresetName(),
+    createdAt: Date.now(),
+  };
+  const galleryItems = [item, ...getState().galleryItems].slice(0, 30);
+  setState({ galleryItems });
+  persistPersonalization();
+  renderGallery();
+  return item;
+}
+
+function renderGallery() {
+  const grid = $('gallery-grid');
+  if (!grid) return;
+  const items = getState().galleryItems || [];
+  if (!items.length) {
+    grid.innerHTML = '<div class="gallery-empty">No photos yet. Capture or export a shot to build your private camera roll.</div>';
+    return;
+  }
+  grid.innerHTML = items.map(item => {
+    const safeTitle = escapeHtml(item.title);
+    return `
+    <article class="gallery-card" data-gallery-id="${item.id}">
+      <img src="${item.url}" alt="${safeTitle}" loading="lazy" />
+      <div class="gallery-card-body">
+        <div class="gallery-card-title">${safeTitle}</div>
+        <div class="gallery-card-actions">
+          <button class="btn btn-secondary" data-gallery-action="open">Open</button>
+          <button class="btn btn-secondary" data-gallery-action="share">Share</button>
+          <button class="btn btn-secondary" data-gallery-action="delete">Delete</button>
+          <button class="btn btn-primary" data-gallery-action="download">Save</button>
+        </div>
+      </div>
+    </article>
+  `;
+  }).join('');
+}
+
+async function handleGalleryAction(action, id) {
+  const item = getState().galleryItems.find(entry => entry.id === id);
+  if (!item) return;
+
+  if (action === 'open') {
+    loadImageFromDataUrl(item.url);
+    closeGalleryModal();
+  } else if (action === 'delete') {
+    const galleryItems = getState().galleryItems.filter(entry => entry.id !== id);
+    setState({ galleryItems });
+    persistPersonalization();
+    renderGallery();
+  } else if (action === 'download') {
+    const link = document.createElement('a');
+    link.href = item.url;
+    link.download = `${item.title.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}_${item.id}.jpg`;
+    link.click();
+  } else if (action === 'share') {
+    const blob = dataUrlToBlob(item.url);
+    const file = typeof File === 'function' ? new File([blob], `${item.title}.jpg`, { type: blob.type || 'image/jpeg' }) : null;
+    if (file && navigator.canShare?.({ files: [file] }) && navigator.share) {
+      await navigator.share({ files: [file], title: item.title }).catch(err => {
+        if (err?.name !== 'AbortError') console.warn('Gallery share failed', err);
+      });
+    } else {
+      showToast('Use Save to download this photo');
+    }
+  }
+}
+
 let crushBase = null;
+let retouchActive = false;
+let retouchMode = 'dodge';
+let retouchSize = 42;
+let retouchStrength = 35;
+let retouchPainting = false;
+let retouchBase = null;
 
 function buildAdjustPanel() {
   const items = [
@@ -297,6 +774,544 @@ function buildAdjustPanel() {
   });
 }
 
+function buildProPanel() {
+  const workspace = $('pro-workspace');
+  if (!workspace) return;
+
+  workspace.innerHTML = `
+    <section class="pro-card">
+      <div class="pro-card-header">
+        <div>
+          <h4>Histogram</h4>
+          <p>RGB tonal distribution</p>
+        </div>
+        <button id="btn-auto-enhance" class="btn btn-secondary">Auto</button>
+      </div>
+      <canvas id="histogram-canvas" width="320" height="96"></canvas>
+      <button id="btn-reset-pro" class="btn btn-secondary btn-full">Reset Pro Adjustments</button>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header"><h4>Levels & Presence</h4></div>
+      <div class="pro-slider-list">
+        ${PRO_TONE_CONTROLS.map(control => renderProSlider(control, 'tone')).join('')}
+      </div>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header">
+        <div>
+          <h4>Curves</h4>
+          <p>Regional tone shaping</p>
+        </div>
+      </div>
+      <div class="curve-grid">
+        ${CURVE_CONTROLS.map(control => renderProSlider(control, 'curve')).join('')}
+      </div>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header">
+        <div>
+          <h4>Color Balance</h4>
+          <p>Shift shadows, midtones, and highlights</p>
+        </div>
+      </div>
+      <div class="color-balance-grid">
+        ${COLOR_BALANCE_RANGES.map(range => `
+          <div class="color-balance-range">
+            <h5>${range}</h5>
+            ${COLOR_BALANCE_CONTROLS.map(control => renderColorBalanceSlider(range, control)).join('')}
+          </div>
+        `).join('')}
+      </div>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header">
+        <div>
+          <h4>HSL Color Mixer</h4>
+          <p>Target individual color families</p>
+        </div>
+      </div>
+      <div class="hsl-mixer">
+        ${HSL_COLORS.map(color => renderHslGroup(color)).join('')}
+      </div>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header"><h4>Split Toning</h4></div>
+      <div class="pro-slider-list">
+        ${SPLIT_TONE_CONTROLS.map(control => renderProSlider(control, 'split')).join('')}
+      </div>
+    </section>
+  `;
+
+  workspace.addEventListener('input', handleProInput);
+  $('btn-auto-enhance')?.addEventListener('click', autoEnhance);
+  $('btn-reset-pro')?.addEventListener('click', resetProAdjustments);
+  updateHistogram(getState().currentImageData);
+}
+
+function renderProSlider(control, group) {
+  return `
+    <label class="pro-slider">
+      <span>${control.label}<strong id="pro-val-${group}-${control.key}">${control.value}</strong></span>
+      <input type="range" min="${control.min}" max="${control.max}" value="${control.value}" data-pro-group="${group}" data-pro-key="${control.key}" />
+    </label>
+  `;
+}
+
+function renderColorBalanceSlider(range, control) {
+  return `
+    <label class="pro-slider">
+      <span>${control.label}<strong id="cb-val-${range}-${control.key}">0</strong></span>
+      <input type="range" min="-100" max="100" value="0" data-color-balance-range="${range}" data-color-balance-key="${control.key}" />
+    </label>
+  `;
+}
+
+function renderHslGroup(color) {
+  return `
+    <div class="hsl-row" data-hsl-row="${color}">
+      <div class="hsl-color-label"><span class="hsl-dot hsl-dot-${color}"></span>${color}</div>
+      ${['h', 's', 'l'].map(channel => `
+        <label>
+          <span>${channel.toUpperCase()} <strong id="hsl-val-${color}-${channel}">0</strong></span>
+          <input type="range" min="${channel === 'h' ? -60 : -100}" max="${channel === 'h' ? 60 : 100}" value="0" data-hsl-color="${color}" data-hsl-channel="${channel}" />
+        </label>
+      `).join('')}
+    </div>
+  `;
+}
+
+function handleProInput(e) {
+  const target = e.target;
+  if (target.matches('[data-pro-group="tone"]')) {
+    const key = target.dataset.proKey;
+    const value = parseInt(target.value, 10);
+    setState({ adjustments: { ...getState().adjustments, [key]: value } });
+    $(`pro-val-tone-${key}`).textContent = value;
+    scheduleApply();
+  } else if (target.matches('[data-pro-group="curve"]')) {
+    const key = target.dataset.proKey;
+    const value = parseInt(target.value, 10);
+    const toneCurve = { ...(getState().adjustments.toneCurve || {}), [key]: value };
+    setState({ adjustments: { ...getState().adjustments, toneCurve } });
+    $(`pro-val-curve-${key}`).textContent = value;
+    scheduleApply();
+  } else if (target.matches('[data-color-balance-range]')) {
+    const range = target.dataset.colorBalanceRange;
+    const key = target.dataset.colorBalanceKey;
+    const value = parseInt(target.value, 10);
+    const current = getState().adjustments.colorBalance || {};
+    const colorBalance = {
+      ...current,
+      [range]: {
+        ...(current[range] || {}),
+        [key]: value,
+      },
+    };
+    setState({ adjustments: { ...getState().adjustments, colorBalance } });
+    $(`cb-val-${range}-${key}`).textContent = value;
+    scheduleApply();
+  } else if (target.matches('[data-pro-group="split"]')) {
+    const key = target.dataset.proKey;
+    const value = parseInt(target.value, 10);
+    const splitTone = { ...(getState().adjustments.splitTone || {}), [key]: value };
+    setState({ adjustments: { ...getState().adjustments, splitTone } });
+    $(`pro-val-split-${key}`).textContent = value;
+    scheduleApply();
+  } else if (target.matches('[data-hsl-color]')) {
+    const color = target.dataset.hslColor;
+    const channel = target.dataset.hslChannel;
+    const value = parseInt(target.value, 10);
+    const currentHsl = getState().adjustments.hsl || {};
+    const hsl = {
+      ...currentHsl,
+      [color]: {
+        ...(currentHsl[color] || {}),
+        [channel]: value,
+      },
+    };
+    setState({ adjustments: { ...getState().adjustments, hsl } });
+    $(`hsl-val-${color}-${channel}`).textContent = value;
+    scheduleApply();
+  }
+}
+
+function autoEnhance() {
+  const source = getState().currentImageData || getState().history[0];
+  if (!source) { showToast('Load a photo first'); return; }
+  const stats = analyzeImage(source);
+  const blackPoint = Math.min(18, Math.max(0, Math.round(stats.p02 / 255 * 100) - 1));
+  const whitePoint = Math.max(72, Math.min(115, Math.round(stats.p98 / 255 * 100) + 4));
+  const exposure = Math.round((128 - stats.mean) / 5);
+  const shadows = stats.mean < 105 ? 18 : 6;
+  const highlights = stats.p98 > 238 ? -18 : -6;
+  const contrast = stats.spread < 110 ? 12 : 4;
+  const vibrance = stats.saturation < 0.18 ? 18 : 8;
+  const clarity = stats.spread < 125 ? 12 : 6;
+  const dehaze = stats.p02 > 35 ? 8 : 3;
+  const gamma = Math.round((118 - stats.median) / 3);
+
+  const adjustments = {
+    ...getState().adjustments,
+    blackPoint,
+    whitePoint,
+    gamma,
+    exposure,
+    shadows,
+    highlights,
+    contrast,
+    vibrance,
+    clarity,
+    dehaze,
+  };
+  setState({ adjustments });
+  syncAdjustmentControls();
+  scheduleApply();
+  showToast('Auto enhance applied');
+}
+
+function analyzeImage(imageData) {
+  const hist = new Uint32Array(256);
+  const d = imageData.data;
+  let total = 0;
+  let saturation = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = Math.round(d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722);
+    hist[lum]++;
+    total += lum;
+    const max = Math.max(d[i], d[i + 1], d[i + 2]);
+    const min = Math.min(d[i], d[i + 1], d[i + 2]);
+    saturation += max ? (max - min) / max : 0;
+  }
+  const pixels = d.length / 4;
+  const percentile = pct => {
+    const target = pixels * pct;
+    let sum = 0;
+    for (let i = 0; i < hist.length; i++) {
+      sum += hist[i];
+      if (sum >= target) return i;
+    }
+    return 255;
+  };
+  const p02 = percentile(0.02);
+  const p50 = percentile(0.5);
+  const p98 = percentile(0.98);
+  return {
+    p02,
+    p98,
+    median: p50,
+    mean: total / pixels,
+    spread: p98 - p02,
+    saturation: saturation / pixels,
+  };
+}
+
+function resetProAdjustments() {
+  const adjustments = { ...getState().adjustments };
+  for (const control of PRO_TONE_CONTROLS) adjustments[control.key] = control.value;
+  delete adjustments.hsl;
+  delete adjustments.splitTone;
+  delete adjustments.toneCurve;
+  delete adjustments.colorBalance;
+  setState({ adjustments });
+  syncAdjustmentControls();
+  scheduleApply();
+  showToast('Pro adjustments reset');
+}
+
+function syncAdjustmentControls() {
+  const adjustments = getState().adjustments;
+  document.querySelectorAll('[data-adj]').forEach(input => {
+    const key = input.dataset.adj;
+    const value = adjustments[key] ?? 0;
+    input.value = value;
+    $(`adj-val-${key}`).textContent = value;
+  });
+  for (const control of PRO_TONE_CONTROLS) {
+    const value = adjustments[control.key] ?? control.value;
+    const input = document.querySelector(`[data-pro-group="tone"][data-pro-key="${control.key}"]`);
+    if (input) input.value = value;
+    const label = $(`pro-val-tone-${control.key}`);
+    if (label) label.textContent = value;
+  }
+  for (const control of SPLIT_TONE_CONTROLS) {
+    const value = adjustments.splitTone?.[control.key] ?? control.value;
+    const input = document.querySelector(`[data-pro-group="split"][data-pro-key="${control.key}"]`);
+    if (input) input.value = value;
+    const label = $(`pro-val-split-${control.key}`);
+    if (label) label.textContent = value;
+  }
+  for (const control of CURVE_CONTROLS) {
+    const value = adjustments.toneCurve?.[control.key] ?? control.value;
+    const input = document.querySelector(`[data-pro-group="curve"][data-pro-key="${control.key}"]`);
+    if (input) input.value = value;
+    const label = $(`pro-val-curve-${control.key}`);
+    if (label) label.textContent = value;
+  }
+  for (const range of COLOR_BALANCE_RANGES) {
+    for (const control of COLOR_BALANCE_CONTROLS) {
+      const value = adjustments.colorBalance?.[range]?.[control.key] ?? 0;
+      const input = document.querySelector(`[data-color-balance-range="${range}"][data-color-balance-key="${control.key}"]`);
+      if (input) input.value = value;
+      const label = $(`cb-val-${range}-${control.key}`);
+      if (label) label.textContent = value;
+    }
+  }
+  for (const color of HSL_COLORS) {
+    for (const channel of ['h', 's', 'l']) {
+      const value = adjustments.hsl?.[color]?.[channel] ?? 0;
+      const input = document.querySelector(`[data-hsl-color="${color}"][data-hsl-channel="${channel}"]`);
+      if (input) input.value = value;
+      const label = $(`hsl-val-${color}-${channel}`);
+      if (label) label.textContent = value;
+    }
+  }
+}
+
+function updateHistogram(imageData) {
+  const canvas = $('histogram-canvas');
+  if (!canvas) return;
+  const context = canvas.getContext('2d');
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = '#07070b';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  if (!imageData) return;
+
+  const channels = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    channels[0][d[i]]++;
+    channels[1][d[i + 1]]++;
+    channels[2][d[i + 2]]++;
+  }
+  const max = Math.max(...channels.flatMap(channel => Array.from(channel)));
+  const colors = ['rgba(255,70,82,0.65)', 'rgba(46,213,115,0.55)', 'rgba(84,160,255,0.65)'];
+  channels.forEach((hist, channelIndex) => {
+    context.fillStyle = colors[channelIndex];
+    for (let i = 0; i < hist.length; i++) {
+      const x = i / 255 * canvas.width;
+      const barHeight = Math.sqrt(hist[i] / max) * canvas.height;
+      context.fillRect(x, canvas.height - barHeight, Math.max(1, canvas.width / 256), barHeight);
+    }
+  });
+}
+
+function applyImageOperation(message, operation) {
+  const state = getState();
+  if (!state.currentImageData) return;
+  const result = operation(cloneImageData(state.currentImageData));
+  setState({ currentImageData: result });
+  pushHistory(result);
+  renderCanvas(result);
+  const newHist = [...getState().history];
+  newHist[0] = result;
+  setState({ history: newHist, activePreset: null });
+  showToast(message);
+}
+
+function invertImageData(imageData) {
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = 255 - d[i];
+    d[i + 1] = 255 - d[i + 1];
+    d[i + 2] = 255 - d[i + 2];
+  }
+  return imageData;
+}
+
+function thresholdImageData(imageData, threshold) {
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const v = d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722 >= threshold ? 255 : 0;
+    d[i] = v; d[i + 1] = v; d[i + 2] = v;
+  }
+  return imageData;
+}
+
+function posterizeImageData(imageData, levels) {
+  const d = imageData.data;
+  const step = 255 / (levels - 1);
+  for (let i = 0; i < d.length; i += 4) {
+    d[i] = Math.round(d[i] / step) * step;
+    d[i + 1] = Math.round(d[i + 1] / step) * step;
+    d[i + 2] = Math.round(d[i + 2] / step) * step;
+  }
+  return imageData;
+}
+
+function autoColor() {
+  const source = getState().currentImageData || getState().history[0];
+  if (!source) { showToast('Load a photo first'); return; }
+  const d = source.data;
+  let r = 0, g = 0, b = 0, count = 0;
+  for (let i = 0; i < d.length; i += 16) {
+    r += d[i]; g += d[i + 1]; b += d[i + 2]; count++;
+  }
+  r /= count; g /= count; b /= count;
+  const avg = (r + g + b) / 3;
+  const temperature = Math.round((b - r) / 3);
+  const tint = Math.round((avg - g) / 2.8);
+  const adjustments = {
+    ...getState().adjustments,
+    temperature: Math.max(-45, Math.min(45, temperature)),
+    tint: Math.max(-45, Math.min(45, tint)),
+    vibrance: Math.max(getState().adjustments.vibrance || 0, 10),
+  };
+  setState({ adjustments });
+  syncAdjustmentControls();
+  scheduleApply();
+  showToast('Auto color applied');
+}
+
+function openRetouchOptions() {
+  retouchActive = true;
+  const options = $('tool-options');
+  options.classList.remove('hidden');
+  options.innerHTML = `
+    <div class="retouch-panel">
+      <div class="tool-options-header">
+        <strong>Retouch Brush</strong>
+        <button id="btn-retouch-close" class="topbar-btn" aria-label="Close retouch">×</button>
+      </div>
+      <div class="retouch-modes">
+        ${RETOUCH_MODES.map(mode => `<button class="retouch-mode${mode.id === retouchMode ? ' active' : ''}" data-retouch-mode="${mode.id}">${mode.label}</button>`).join('')}
+      </div>
+      <label class="pro-slider"><span>Size<strong id="retouch-size-value">${retouchSize}</strong></span><input id="retouch-size" type="range" min="8" max="140" value="${retouchSize}" /></label>
+      <label class="pro-slider"><span>Strength<strong id="retouch-strength-value">${retouchStrength}</strong></span><input id="retouch-strength" type="range" min="5" max="100" value="${retouchStrength}" /></label>
+      <p class="retouch-help">Paint directly on the image. Undo works after each stroke.</p>
+    </div>
+  `;
+  options.querySelectorAll('[data-retouch-mode]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      retouchMode = btn.dataset.retouchMode;
+      options.querySelectorAll('.retouch-mode').forEach(item => item.classList.toggle('active', item === btn));
+    });
+  });
+  $('retouch-size')?.addEventListener('input', e => {
+    retouchSize = parseInt(e.target.value, 10);
+    $('retouch-size-value').textContent = retouchSize;
+  });
+  $('retouch-strength')?.addEventListener('input', e => {
+    retouchStrength = parseInt(e.target.value, 10);
+    $('retouch-strength-value').textContent = retouchStrength;
+  });
+  $('btn-retouch-close')?.addEventListener('click', closeRetouchOptions);
+  showToast('Paint on the photo to retouch');
+}
+
+function closeRetouchOptions() {
+  retouchActive = false;
+  retouchPainting = false;
+  retouchBase = null;
+  $('tool-options')?.classList.add('hidden');
+}
+
+function getCanvasPoint(e) {
+  const rect = mainCanvas.getBoundingClientRect();
+  return {
+    x: Math.round((e.clientX - rect.left) * mainCanvas.width / rect.width),
+    y: Math.round((e.clientY - rect.top) * mainCanvas.height / rect.height),
+  };
+}
+
+function startRetouchStroke(e) {
+  if (!retouchActive || !getState().currentImageData) return;
+  e.preventDefault();
+  retouchPainting = true;
+  retouchBase = cloneImageData(getState().currentImageData);
+  mainCanvas.setPointerCapture?.(e.pointerId);
+  paintRetouch(e);
+}
+
+function moveRetouchStroke(e) {
+  if (!retouchActive || !retouchPainting) return;
+  e.preventDefault();
+  paintRetouch(e);
+}
+
+function endRetouchStroke() {
+  if (!retouchPainting) return;
+  retouchPainting = false;
+  const data = getState().currentImageData;
+  if (data) {
+    pushHistory(data);
+    const history = [...getState().history];
+    history[0] = cloneImageData(data);
+    setState({ history, activePreset: null });
+  }
+  retouchBase = null;
+}
+
+function paintRetouch(e) {
+  const state = getState();
+  const current = state.currentImageData;
+  if (!current) return;
+  const point = getCanvasPoint(e);
+  const data = cloneImageData(current);
+  applyRetouchBrush(data, point.x, point.y, retouchSize, retouchStrength, retouchMode, retouchBase || current);
+  setState({ currentImageData: data });
+  renderCanvas(data);
+}
+
+function applyRetouchBrush(imageData, cx, cy, size, strength, mode, baseImage) {
+  const d = imageData.data;
+  const base = baseImage.data;
+  const w = imageData.width;
+  const h = imageData.height;
+  const radius = Math.max(2, Math.round(size / 2));
+  const amount = strength / 100;
+  const x0 = Math.max(0, cx - radius), x1 = Math.min(w - 1, cx + radius);
+  const y0 = Math.max(0, cy - radius), y1 = Math.min(h - 1, cy + radius);
+
+  for (let y = y0; y <= y1; y++) {
+    for (let x = x0; x <= x1; x++) {
+      const dx = x - cx, dy = y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist > radius) continue;
+      const feather = (1 - dist / radius) * amount;
+      const i = (y * w + x) * 4;
+      let r = d[i], g = d[i + 1], b = d[i + 2];
+
+      if (mode === 'dodge') {
+        r += 45 * feather; g += 45 * feather; b += 45 * feather;
+      } else if (mode === 'burn') {
+        r -= 45 * feather; g -= 45 * feather; b -= 45 * feather;
+      } else if (mode === 'saturate' || mode === 'desaturate') {
+        const gray = r * 0.2126 + g * 0.7152 + b * 0.0722;
+        const sat = mode === 'saturate' ? 1 + feather : 1 - feather;
+        r = gray + (r - gray) * sat;
+        g = gray + (g - gray) * sat;
+        b = gray + (b - gray) * sat;
+      } else if (mode === 'blur' || mode === 'sharpen') {
+        const avg = sampleLocalAverage(base, w, h, x, y, Math.max(1, Math.round(radius / 8)));
+        if (mode === 'blur') {
+          r = r * (1 - feather) + avg[0] * feather;
+          g = g * (1 - feather) + avg[1] * feather;
+          b = b * (1 - feather) + avg[2] * feather;
+        } else {
+          r += (r - avg[0]) * feather * 1.4;
+          g += (g - avg[1]) * feather * 1.4;
+          b += (b - avg[2]) * feather * 1.4;
+        }
+      }
+
+      d[i] = Math.min(255, Math.max(0, r));
+      d[i + 1] = Math.min(255, Math.max(0, g));
+      d[i + 2] = Math.min(255, Math.max(0, b));
+    }
+  }
+}
+
+function sampleLocalAverage(data, w, h, cx, cy, radius) {
+  let r = 0, g = 0, b = 0, count = 0;
+  for (let y = Math.max(0, cy - radius); y <= Math.min(h - 1, cy + radius); y++) {
+    for (let x = Math.max(0, cx - radius); x <= Math.min(w - 1, cx + radius); x++) {
+      const i = (y * w + x) * 4;
+      r += data[i]; g += data[i + 1]; b += data[i + 2]; count++;
+    }
+  }
+  return [r / count, g / count, b / count];
+}
+
 function performPixelCrush(val, source) {
   if (!source) return;
   const w = source.width, h = source.height;
@@ -313,14 +1328,14 @@ function performPixelCrush(val, source) {
   const nh = Math.max(10, Math.round(h * factor));
   
   // Step 1: Downscale to tiny resolution
-  const smallOc = new OffscreenCanvas(nw, nh);
+  const smallOc = createWorkCanvas(nw, nh);
   const smallCtx = smallOc.getContext('2d');
-  const src = new OffscreenCanvas(w, h);
+  const src = createWorkCanvas(w, h);
   src.getContext('2d').putImageData(source, 0, 0);
   smallCtx.drawImage(src, 0, 0, nw, nh);
   
   // Step 2: Upscale back to original resolution with nearest-neighbor
-  const bigOc = new OffscreenCanvas(w, h);
+  const bigOc = createWorkCanvas(w, h);
   const bigCtx = bigOc.getContext('2d');
   bigCtx.imageSmoothingEnabled = false;
   bigCtx.msImageSmoothingEnabled = false;
@@ -342,12 +1357,23 @@ function performPixelCrush(val, source) {
 function buildToolsPanel() {
   const tools = [
     { id:'crop', label:'Crop', icon:'✂️' },
+    { id:'auto-tone', label:'Auto Tone', icon:'◐' },
+    { id:'auto-color', label:'Auto Color', icon:'🎨' },
+    { id:'smart-sharpen', label:'Smart Sharp', icon:'◆' },
     { id:'rotate-cw', label:'Rotate →', icon:'↻' },
     { id:'rotate-ccw', label:'Rotate ←', icon:'↺' },
     { id:'flip-h', label:'Flip H', icon:'↔️' },
     { id:'flip-v', label:'Flip V', icon:'↕️' },
+    { id:'invert', label:'Invert', icon:'◩' },
+    { id:'threshold', label:'Threshold', icon:'◧' },
+    { id:'posterize', label:'Posterize', icon:'▦' },
+    { id:'retouch', label:'Retouch', icon:'🖌️' },
     { id:'timestamp', label:'Date Stamp', icon:'📅' },
     { id:'border', label:'Film Border', icon:'🖼️' },
+    { id:'favorite-current', label:'Favorite', icon:'⭐' },
+    { id:'default-current', label:'Default Cam', icon:'●' },
+    { id:'save-preset', label:'Save Preset', icon:'💽' },
+    { id:'gallery', label:'Gallery', icon:'🖼️' },
   ];
   toolsGrid.innerHTML = tools.map(t =>
     `<button class="tool-btn" data-tool="${t.id}"><span style="font-size:20px">${t.icon}</span>${t.label}</button>`
@@ -360,16 +1386,43 @@ function buildToolsPanel() {
 
 function handleTool(tool) {
   const state = getState();
+  if (tool === 'save-preset') { openCustomPresetModal(); return; }
+  if (tool === 'gallery') { openGalleryModal(); return; }
+  if (tool === 'favorite-current') {
+    if (!state.activePreset) { showToast('Select a preset first'); return; }
+    toggleFavoritePreset(state.activePreset);
+    showToast('Favorite updated');
+    return;
+  }
+  if (tool === 'default-current') {
+    if (!state.activePreset) { showToast('Select a preset first'); return; }
+    setDefaultPreset(state.activePreset);
+    return;
+  }
   if (!state.imageLoaded) { showToast('Load a photo first'); return; }
   const data = state.currentImageData;
   const w = data.width, h = data.height;
 
   if (tool === 'crop') {
     startCrop();
+  } else if (tool === 'auto-tone') {
+    autoEnhance();
+  } else if (tool === 'auto-color') {
+    autoColor();
+  } else if (tool === 'smart-sharpen') {
+    applyImageOperation('Smart sharpen applied', data => applySharpen(data, 28));
+  } else if (tool === 'invert') {
+    applyImageOperation('Inverted', invertImageData);
+  } else if (tool === 'threshold') {
+    applyImageOperation('Threshold applied', data => thresholdImageData(data, 128));
+  } else if (tool === 'posterize') {
+    applyImageOperation('Posterized', data => posterizeImageData(data, 6));
+  } else if (tool === 'retouch') {
+    openRetouchOptions();
   } else if (tool === 'rotate-cw' || tool === 'rotate-ccw') {
-    const oc = new OffscreenCanvas(h, w);
+    const oc = createWorkCanvas(h, w);
     const octx = oc.getContext('2d');
-    const src = new OffscreenCanvas(w, h);
+    const src = createWorkCanvas(w, h);
     src.getContext('2d').putImageData(data, 0, 0);
     octx.translate(tool === 'rotate-cw' ? h : 0, tool === 'rotate-cw' ? 0 : w);
     octx.rotate(tool === 'rotate-cw' ? Math.PI / 2 : -Math.PI / 2);
@@ -381,9 +1434,9 @@ function handleTool(tool) {
     setState({ history: newHist });
     pushHistory(nd); renderCanvas(nd);
   } else if (tool === 'flip-h' || tool === 'flip-v') {
-    const oc = new OffscreenCanvas(w, h);
+    const oc = createWorkCanvas(w, h);
     const octx = oc.getContext('2d');
-    const src = new OffscreenCanvas(w, h);
+    const src = createWorkCanvas(w, h);
     src.getContext('2d').putImageData(data, 0, 0);
     if (tool === 'flip-h') { octx.translate(w, 0); octx.scale(-1, 1); }
     else { octx.translate(0, h); octx.scale(1, -1); }
@@ -394,7 +1447,7 @@ function handleTool(tool) {
     setState({ history: newHist_ });
     pushHistory(nd); renderCanvas(nd);
   } else if (tool === 'timestamp') {
-    const oc = new OffscreenCanvas(w, h);
+    const oc = createWorkCanvas(w, h);
     const octx = oc.getContext('2d');
     octx.putImageData(data, 0, 0);
     const fs = Math.max(14, Math.floor(w / 20));
@@ -421,7 +1474,7 @@ function startCrop() {
   
   const overlay = document.createElement('div');
   overlay.id = 'crop-overlay';
-  overlay.style.cssText = 'position:absolute; inset:0; border:2px dashed var(--accent); background:rgba(0,0,0,0.3); z-index:20; cursor:crosshair;';
+  overlay.style.cssText = 'position:absolute; inset:0; border:2px dashed var(--accent); background:rgba(0,0,0,0.3); z-index:20; cursor:crosshair; touch-action:none;';
   canvasContainer.appendChild(overlay);
 
   let startX, startY, currentX, currentY;
@@ -429,18 +1482,29 @@ function startCrop() {
   box.style.cssText = 'position:absolute; border:2px solid var(--accent); background:rgba(255,149,0,0.1); display:none;';
   overlay.appendChild(box);
 
+  const getPoint = e => {
+    const point = e.touches?.[0] || e.changedTouches?.[0] || e;
+    return { x: point.clientX, y: point.clientY };
+  };
+
   const onDown = e => {
+    e.preventDefault();
     const rect = overlay.getBoundingClientRect();
-    startX = (e.clientX || e.touches[0].clientX) - rect.left;
-    startY = (e.clientY || e.touches[0].clientY) - rect.top;
+    const point = getPoint(e);
+    startX = point.x - rect.left;
+    startY = point.y - rect.top;
+    currentX = startX;
+    currentY = startY;
     box.style.display = 'block';
   };
 
   const onMove = e => {
     if (startX === undefined) return;
+    e.preventDefault();
     const rect = overlay.getBoundingClientRect();
-    currentX = (e.clientX || e.touches[0].clientX) - rect.left;
-    currentY = (e.clientY || e.touches[0].clientY) - rect.top;
+    const point = getPoint(e);
+    currentX = point.x - rect.left;
+    currentY = point.y - rect.top;
     
     const x = Math.min(startX, currentX);
     const y = Math.min(startY, currentY);
@@ -454,18 +1518,19 @@ function startCrop() {
   };
 
   const onUp = () => {
-    if (startX === undefined || currentX === undefined) return;
-    const rect = overlay.getBoundingClientRect();
-    const scaleX = mainCanvas.width / rect.width;
-    const scaleY = mainCanvas.height / rect.height;
-    
-    const x = Math.min(startX, currentX) * scaleX;
-    const y = Math.min(startY, currentY) * scaleY;
-    const width = Math.abs(startX - currentX) * scaleX;
-    const height = Math.abs(startY - currentY) * scaleY;
-    
-    if (width > 10 && height > 10) {
-      performCrop(x, y, width, height);
+    if (startX !== undefined && currentX !== undefined) {
+      const rect = overlay.getBoundingClientRect();
+      const scaleX = mainCanvas.width / rect.width;
+      const scaleY = mainCanvas.height / rect.height;
+      
+      const x = Math.min(startX, currentX) * scaleX;
+      const y = Math.min(startY, currentY) * scaleY;
+      const width = Math.abs(startX - currentX) * scaleX;
+      const height = Math.abs(startY - currentY) * scaleY;
+      
+      if (width > 10 && height > 10) {
+        performCrop(x, y, width, height);
+      }
     }
     
     overlay.remove();
@@ -475,13 +1540,18 @@ function startCrop() {
   overlay.addEventListener('mousedown', onDown);
   overlay.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp, { once: true });
-  overlay.addEventListener('touchstart', onDown);
-  overlay.addEventListener('touchmove', onMove);
+  overlay.addEventListener('touchstart', onDown, { passive: false });
+  overlay.addEventListener('touchmove', onMove, { passive: false });
   window.addEventListener('touchend', onUp, { once: true });
 }
 
 function performCrop(x, y, w, h) {
-  const oc = new OffscreenCanvas(w, h);
+  x = Math.max(0, Math.floor(x));
+  y = Math.max(0, Math.floor(y));
+  w = Math.max(1, Math.round(w));
+  h = Math.max(1, Math.round(h));
+
+  const oc = createWorkCanvas(w, h);
   const octx = oc.getContext('2d');
   octx.drawImage(mainCanvas, x, y, w, h, 0, 0, w, h);
   
@@ -502,7 +1572,7 @@ function addBorder() {
   const w = data.width, h = data.height;
   const borderSize = Math.max(20, Math.floor(w * 0.05));
   
-  const oc = new OffscreenCanvas(w + borderSize * 2, h + borderSize * 2);
+  const oc = createWorkCanvas(w + borderSize * 2, h + borderSize * 2);
   const octx = oc.getContext('2d');
   
   // White film border
@@ -514,7 +1584,7 @@ function addBorder() {
   octx.lineWidth = 1;
   octx.strokeRect(borderSize - 1, borderSize - 1, w + 2, h + 2);
   
-  const src = new OffscreenCanvas(w, h);
+  const src = createWorkCanvas(w, h);
   src.getContext('2d').putImageData(data, 0, 0);
   octx.drawImage(src, borderSize, borderSize);
   
@@ -532,33 +1602,74 @@ function addBorder() {
 function bindEvents() {
   $('btn-upload-empty')?.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', e => { if (e.target.files[0]) loadImageFromFile(e.target.files[0]); });
+  cameraFileInput?.addEventListener('change', e => {
+    if (e.target.files[0]) {
+      loadImageFromFile(e.target.files[0]);
+      closeCamera();
+    }
+  });
   
   // Menu
   $('btn-menu')?.addEventListener('click', () => $('menu-modal').classList.remove('hidden'));
   $('btn-menu-close')?.addEventListener('click', () => $('menu-modal').classList.add('hidden'));
   $('menu-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', () => $('menu-modal').classList.add('hidden'));
+  $('btn-gallery')?.addEventListener('click', openGalleryModal);
+  $('btn-gallery-close')?.addEventListener('click', closeGalleryModal);
+  $('gallery-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', closeGalleryModal);
+  $('gallery-grid')?.addEventListener('click', e => {
+    const action = e.target.closest('[data-gallery-action]')?.dataset.galleryAction;
+    const card = e.target.closest('[data-gallery-id]');
+    if (action && card) handleGalleryAction(action, card.dataset.galleryId);
+  });
+  $('btn-custom-preset-close')?.addEventListener('click', closeCustomPresetModal);
+  $('custom-preset-modal')?.querySelector('.modal-backdrop')?.addEventListener('click', closeCustomPresetModal);
+  $('btn-custom-preset-save')?.addEventListener('click', saveCustomPreset);
+  $('custom-preset-name')?.addEventListener('keydown', e => {
+    if (e.key === 'Enter') saveCustomPreset();
+  });
 
   $('btn-camera-empty')?.addEventListener('click', openCamera);
   $('btn-camera-nav')?.addEventListener('click', openCamera);
   $('btn-camera-close')?.addEventListener('click', closeCamera);
   $('btn-camera-flip')?.addEventListener('click', flipCamera);
   $('btn-camera-capture')?.addEventListener('click', capturePhoto);
+  $('camera-preset-strip')?.addEventListener('click', e => {
+    const chip = e.target.closest('[data-camera-preset]');
+    if (!chip) return;
+    const id = chip.dataset.cameraPreset || null;
+    setState({ activePreset: id, presetIntensity: 100 });
+    renderCameraPresetStrip();
+    filterPresets();
+  });
+  $('camera-exposure')?.addEventListener('input', e => {
+    cameraExposure = parseInt(e.target.value, 10) || 0;
+  });
+  $('camera-zoom')?.addEventListener('input', e => {
+    cameraZoom = Math.max(1, (parseInt(e.target.value, 10) || 100) / 100);
+    const track = cameraStream?.getVideoTracks?.()[0];
+    const caps = track?.getCapabilities?.();
+    if (caps?.zoom) {
+      const zoom = Math.min(caps.zoom.max, Math.max(caps.zoom.min, cameraZoom));
+      track.applyConstraints({ advanced: [{ zoom }] }).catch(() => {});
+    }
+  });
+  document.querySelector('.camera-preview')?.addEventListener('click', handleCameraTapToFocus);
 
   presetGrid.addEventListener('click', e => {
     const card = e.target.closest('.preset-card');
     if (!card) return;
-    if (!getState().imageLoaded) { showToast('Load a photo first'); return; }
     const id = card.dataset.id;
-    presetGrid.querySelectorAll('.preset-card').forEach(c => c.classList.remove('active'));
-    if (getState().activePreset === id) {
-      setState({ activePreset: null }); intensityBar.classList.add('hidden');
-    } else {
-      card.classList.add('active');
-      setState({ activePreset: id, presetIntensity: 100 });
-      intensityBar.classList.remove('hidden');
-      intensitySlider.value = 100; intensityValue.textContent = '100%';
+    const action = e.target.closest('[data-preset-action]')?.dataset.presetAction;
+    if (action === 'favorite') {
+      toggleFavoritePreset(id);
+      return;
     }
-    scheduleApply();
+    if (action === 'default') {
+      setDefaultPreset(id);
+      return;
+    }
+    if (!getState().imageLoaded) showToast('Preset ready for camera');
+    selectPreset(id);
   });
 
   intensitySlider.addEventListener('input', () => {
@@ -578,6 +1689,7 @@ function bindEvents() {
       const a = btn.dataset.action;
       if (a === 'camera') { openCamera(); return; }
       if (a === 'export') { openExportModal(); return; }
+      if (a === 'gallery') { openGalleryModal(); return; }
       document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       switchPanel(a); sidePanel.classList.toggle('open', true);
@@ -618,6 +1730,9 @@ function bindEvents() {
   $('canvas-area')?.addEventListener('click', e => {
     if (e.target.closest('.empty-state') || e.target.closest('.canvas-container')) sidePanel.classList.remove('open');
   });
+  mainCanvas.addEventListener('pointerdown', startRetouchStroke);
+  mainCanvas.addEventListener('pointermove', moveRetouchStroke);
+  window.addEventListener('pointerup', endRetouchStroke);
 
   document.addEventListener('dragover', e => e.preventDefault());
   document.addEventListener('drop', e => {
@@ -634,27 +1749,179 @@ function switchPanel(panel) {
 }
 
 let cameraStream = null, facingMode = 'environment';
-async function openCamera() {
-  $('camera-modal').classList.remove('hidden');
+let cameraPreviewRaf = 0;
+let cameraPreviewBusy = false;
+let lastCameraPreviewAt = 0;
+let cameraExposure = 0;
+let cameraZoom = 1;
+
+function renderCameraPresetStrip() {
+  const strip = $('camera-preset-strip');
+  if (!strip) return;
+  const state = getState();
+  const recommended = ['kodak_portra_400', 'kodak_gold_200', 'kodak_funsaver_flash', 'sony_cybershot', 'cinestill_800t', 'ilford_hp5'];
+  const ids = [state.defaultPreset, state.activePreset, ...state.favoritePresets, ...recommended].filter(Boolean);
+  const presets = [...new Set(ids)].map(findPreset).filter(Boolean).slice(0, 18);
+  if (!presets.length) {
+    strip.innerHTML = '<button class="camera-preset-chip active" data-camera-preset="">Clean</button>';
+    return;
+  }
+  strip.innerHTML = [
+    `<button class="camera-preset-chip${state.activePreset ? '' : ' active'}" data-camera-preset="">Clean</button>`,
+    ...presets.map(preset => `<button class="camera-preset-chip${state.activePreset === preset.id ? ' active' : ''}" data-camera-preset="${preset.id}">${escapeHtml(preset.name)}</button>`),
+  ].join('');
+}
+
+function drawVideoFrameToCanvas(video, canvas, zoom = 1) {
+  const width = video.videoWidth || 1280;
+  const height = video.videoHeight || 720;
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  const srcW = width / zoom;
+  const srcH = height / zoom;
+  const sx = (width - srcW) / 2;
+  const sy = (height - srcH) / 2;
+  context.drawImage(video, sx, sy, srcW, srcH, 0, 0, width, height);
+  return context;
+}
+
+function handleCameraTapToFocus(e) {
+  if (!cameraStream) return;
+  const preview = e.currentTarget;
+  const rect = preview.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const ring = document.createElement('div');
+  ring.className = 'focus-ring';
+  ring.style.left = `${x}px`;
+  ring.style.top = `${y}px`;
+  preview.appendChild(ring);
+  setTimeout(() => ring.remove(), 850);
+
+  const track = cameraStream.getVideoTracks?.()[0];
+  const caps = track?.getCapabilities?.();
+  if (caps?.focusMode?.includes('continuous')) {
+    track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(() => {});
+  }
+
+  showToast('Focus locked');
+}
+
+async function renderCameraPreviewFrame(timestamp = 0) {
+  cameraPreviewRaf = requestAnimationFrame(renderCameraPreviewFrame);
+  if (cameraPreviewBusy || timestamp - lastCameraPreviewAt < 140) return;
+  lastCameraPreviewAt = timestamp;
+
+  const video = $('camera-video');
+  const preview = $('camera-preview-canvas');
+  if (!video?.videoWidth || !preview) return;
+
+  const hasLook = !!getState().activePreset || cameraExposure !== 0;
+  preview.style.opacity = hasLook ? '1' : '0';
+  if (!hasLook) return;
+
+  cameraPreviewBusy = true;
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
-    $('camera-video').srcObject = cameraStream;
-  } catch { showToast('Camera access denied'); $('camera-modal').classList.add('hidden'); }
+    const maxWidth = 480;
+    const ratio = Math.min(1, maxWidth / video.videoWidth);
+    preview.width = Math.max(1, Math.round(video.videoWidth * ratio));
+    preview.height = Math.max(1, Math.round(video.videoHeight * ratio));
+    const previewCtx = preview.getContext('2d', { willReadFrequently: true });
+    const srcW = video.videoWidth / cameraZoom;
+    const srcH = video.videoHeight / cameraZoom;
+    previewCtx.drawImage(video, (video.videoWidth - srcW) / 2, (video.videoHeight - srcH) / 2, srcW, srcH, 0, 0, preview.width, preview.height);
+    const data = previewCtx.getImageData(0, 0, preview.width, preview.height);
+    await renderEffectsToImageData(data, getPreviewFx(getActiveFx({ exposure: cameraExposure })), preview, previewCtx);
+  } catch (err) {
+    console.warn('Camera preview failed', err);
+  } finally {
+    cameraPreviewBusy = false;
+  }
+}
+
+async function openCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    openCameraFileFallback();
+    return;
+  }
+
+  $('camera-modal').classList.remove('hidden');
+  if (!getState().activePreset && getState().defaultPreset) {
+    setState({ activePreset: getState().defaultPreset, presetIntensity: 100 });
+  }
+  renderCameraPresetStrip();
+  try {
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
+      audio: false,
+    });
+    const video = $('camera-video');
+    video.srcObject = cameraStream;
+    await video.play().catch(() => {});
+    startCameraPreview();
+  } catch (err) {
+    console.warn('Camera unavailable', err);
+    closeCamera();
+    openCameraFileFallback('Use your device camera picker');
+  }
+}
+function startCameraPreview() {
+  cancelAnimationFrame(cameraPreviewRaf);
+  lastCameraPreviewAt = 0;
+  cameraPreviewRaf = requestAnimationFrame(renderCameraPreviewFrame);
 }
 function closeCamera() {
+  cancelAnimationFrame(cameraPreviewRaf);
+  cameraPreviewRaf = 0;
+  cameraPreviewBusy = false;
   if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
   $('camera-modal').classList.add('hidden');
 }
 function flipCamera() { facingMode = facingMode === 'environment' ? 'user' : 'environment'; closeCamera(); openCamera(); }
-function capturePhoto() {
+function openCameraFileFallback(message = 'Take or choose a photo') {
+  showToast(message);
+  if (cameraFileInput) {
+    cameraFileInput.value = '';
+    cameraFileInput.click();
+  } else {
+    fileInput.click();
+  }
+}
+async function capturePhoto() {
   const v = $('camera-video');
-  const oc = new OffscreenCanvas(v.videoWidth, v.videoHeight);
-  oc.getContext('2d').drawImage(v, 0, 0);
-  oc.convertToBlob({ type: 'image/jpeg', quality: 0.95 }).then(blob => {
+  if (!v.videoWidth || !v.videoHeight) {
+    showToast('Camera is still starting');
+    return;
+  }
+
+  try {
+    const oc = createWorkCanvas(v.videoWidth, v.videoHeight);
+    const captureCtx = drawVideoFrameToCanvas(v, oc, cameraZoom);
+    const rawData = captureCtx.getImageData(0, 0, oc.width, oc.height);
+    await renderEffectsToImageData(rawData, getActiveFx({ exposure: cameraExposure }), oc, captureCtx);
+    const blob = await canvasToBlob(oc, 'image/jpeg', 0.95);
+    const dataUrl = await blobToDataUrl(blob);
+    await addGalleryItem(dataUrl, { title: getCurrentPresetName(), preset: getCurrentPresetName() });
+    navigator.vibrate?.(12);
     const img = new Image();
-    img.onload = () => { setState({ originalImage: img, imageLoaded: true }); initCanvas(img); closeCamera(); };
-    img.src = URL.createObjectURL(blob);
-  });
+    img.onload = () => {
+      setState({ originalImage: img, imageLoaded: true, activePreset: null });
+      initCanvas(img);
+      closeCamera();
+    };
+    img.onerror = () => {
+      showToast('Could not load captured photo');
+    };
+    img.src = dataUrl;
+  } catch (err) {
+    console.warn('Capture failed', err);
+    showToast('Could not capture photo');
+  }
 }
 
 function openExportModal() {
@@ -677,16 +1944,7 @@ async function showSaveModal() {
   let w = orig.width, h = orig.height;
   const mm = { '4k':3840, '2k':2560, '1080':1920, '720':1280, '480':640 };
   if (res !== 'original' && mm[res]) { const r = Math.min(mm[res]/w, mm[res]/h); if (r<1) { w=Math.round(w*r); h=Math.round(h*r); } }
-  
-  const oc = document.createElement('canvas'); // Use real canvas for toDataURL
-  oc.width = w; oc.height = h;
-  const octx = oc.getContext('2d');
-  octx.drawImage(orig, 0, 0, w, h);
-  
-  // Re-apply destructive tools if any were used
-  // Note: For a fully professional app we'd track these, but for now we'll use the working base
-  // and scale the effects to the export resolution.
-  const workingBase = state.history[0]; 
+
   const exportOc = document.createElement('canvas');
   exportOc.width = w; exportOc.height = h;
   const eCtx = exportOc.getContext('2d');
@@ -695,28 +1953,58 @@ async function showSaveModal() {
   eCtx.drawImage(orig, 0, 0, w, h);
   let data = eCtx.getImageData(0, 0, w, h);
   
-  const preset = state.activePreset ? PRESETS.find(p => p.id === state.activePreset) : null;
-  const fx = { ...state.adjustments };
-  if (preset) { for (const [k,v] of Object.entries(preset.fx)) fx[k] = (fx[k]||0) + v*(state.presetIntensity/100); }
+  const fx = getActiveFx();
   
-  data = applyEffects(data, fx, 100);
-  eCtx.putImageData(data, 0, 0);
+  data = await renderEffectsToImageData(data, fx, exportOc, eCtx);
 
-  // Use DataURL for better iOS compatibility (avoids "no internet" blob error)
-  const dataUrl = exportOc.toDataURL(`image/${format}`, quality);
+  let outputBlob;
+  const requestedType = `image/${format}`;
+  try {
+    outputBlob = await canvasToBlob(exportOc, requestedType, quality);
+  } catch {
+    outputBlob = await canvasToBlob(exportOc, 'image/png');
+  }
+
+  const outputType = outputBlob.type || requestedType;
+  const extension = outputType === 'image/jpeg' ? 'jpg' : (outputType.split('/')[1] || format);
+  const filename = `retrolens_${Date.now()}.${extension}`;
+  const dataUrl = await blobToDataUrl(outputBlob);
+  const shareFile = typeof File === 'function' ? new File([outputBlob], filename, { type: outputType }) : null;
+  await addGalleryItem(dataUrl, { title: getCurrentPresetName(), preset: getCurrentPresetName() });
 
   const modal = $('save-modal');
   const imgPreview = $('save-preview');
+  const shareBtn = $('btn-share-save');
+  const instructions = $('save-instructions');
   imgPreview.src = dataUrl;
   modal.classList.remove('hidden');
 
-  if (!/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+  const canShareFile = !!(shareFile && navigator.canShare?.({ files: [shareFile] }) && navigator.share);
+  if (shareBtn) {
+    shareBtn.style.display = canShareFile ? '' : 'none';
+    shareBtn.onclick = canShareFile ? async () => {
+      try {
+        await navigator.share({ files: [shareFile], title: 'RetroLens photo' });
+      } catch (err) {
+        if (err?.name !== 'AbortError') console.warn('Share failed', err);
+      }
+    } : null;
+  }
+  if (instructions) {
+    instructions.textContent = canShareFile
+      ? 'Use Share / Save for the native sheet, or long press the image below to save it to your photos.'
+      : 'Long press the image below to save it to your photos.';
+  }
+
+  if (!isMobileDevice()) {
     const link = document.createElement('a');
-    link.download = `retrolens_${Date.now()}.${format}`;
-    link.href = dataUrl;
+    const url = URL.createObjectURL(outputBlob);
+    link.download = filename;
+    link.href = url;
     link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   } else {
-    showToast('Long press image to save to Photos');
+    showToast(canShareFile ? 'Tap Share / Save or long press image' : 'Long press image to save to Photos');
   }
 }
 function showToast(msg) {
