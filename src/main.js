@@ -1,7 +1,20 @@
 import '../src/styles/index.css';
 import { getState, setState, subscribe, pushHistory, undo, redo } from './js/state.js';
 import { CATEGORIES, PRESETS } from './js/presets.js';
-import { applyEffects, applyJPEGCompression, applyBlur, applySharpen } from './js/effects.js';
+import {
+  applyEffects,
+  applyJPEGCompression,
+  applyBlur,
+  applySharpen,
+  applyGradientMap,
+  applyEmboss,
+  applyEdgeDetect,
+  applySepiaTone,
+  applyHueSaturation,
+  applyBlackAndWhite,
+  applyAddNoise,
+  applyColorOverlay,
+} from './js/effects.js';
 
 const $ = id => document.getElementById(id);
 const splash = $('splash-screen');
@@ -73,6 +86,334 @@ const RETOUCH_MODES = [
   { id: 'saturate', label: 'Saturate' },
   { id: 'desaturate', label: 'Desaturate' },
 ];
+
+const TEXT_POSITIONS = [
+  { value: 'top-left', label: 'Top Left' },
+  { value: 'top-center', label: 'Top Center' },
+  { value: 'top-right', label: 'Top Right' },
+  { value: 'middle-left', label: 'Mid Left' },
+  { value: 'center', label: 'Center' },
+  { value: 'middle-right', label: 'Mid Right' },
+  { value: 'bottom-left', label: 'Bottom Left' },
+  { value: 'bottom-center', label: 'Bottom Center' },
+  { value: 'bottom-right', label: 'Bottom Right' },
+];
+const TEXT_FONTS = [
+  { value: '"Space Grotesk", sans-serif', label: 'Sans' },
+  { value: '"JetBrains Mono", monospace', label: 'Mono' },
+  { value: '"VT323", monospace', label: 'Retro LCD' },
+  { value: 'Georgia, serif', label: 'Serif' },
+  { value: 'Impact, sans-serif', label: 'Impact' },
+];
+const TIMESTAMP_FORMATS = [
+  { value: 'ymd', label: "'YY MM DD" },
+  { value: 'dmy', label: 'DD/MM/YYYY' },
+  { value: 'mdy', label: 'MM/DD/YYYY' },
+  { value: 'full', label: 'Mon DD, YYYY' },
+  { value: 'datetime', label: 'YYYY-MM-DD HH:MM' },
+];
+const BORDER_STYLES = [
+  { value: 'white', label: 'White' },
+  { value: 'black', label: 'Black' },
+  { value: 'color', label: 'Custom Color' },
+  { value: 'film', label: 'Film' },
+  { value: 'polaroid', label: 'Polaroid' },
+  { value: 'rounded', label: 'Rounded' },
+];
+
+// Customizable tool dialogs — each provides controls + a synchronous render(base, params).
+// applyEffects-based renders use previewReferenceWidth:1200 so literal pixel sizes stay stable.
+const TOOL_DIALOGS = {
+  'brightness-contrast': {
+    title: 'Brightness / Contrast', icon: '☀️', toast: 'Brightness & contrast applied',
+    controls: [
+      { key: 'brightness', label: 'Brightness', type: 'range', min: -100, max: 100, default: 0 },
+      { key: 'contrast', label: 'Contrast', type: 'range', min: -100, max: 100, default: 0 },
+    ],
+    render: (base, p) => applyEffects(base, { brightness: p.brightness, contrast: p.contrast }, 100),
+  },
+  exposure: {
+    title: 'Exposure', icon: '🌗', toast: 'Exposure applied',
+    controls: [
+      { key: 'exposure', label: 'Exposure', type: 'range', min: -100, max: 100, default: 0 },
+      { key: 'highlights', label: 'Highlights', type: 'range', min: -100, max: 100, default: 0 },
+      { key: 'shadows', label: 'Shadows', type: 'range', min: -100, max: 100, default: 0 },
+    ],
+    render: (base, p) => applyEffects(base, { exposure: p.exposure, highlights: p.highlights, shadows: p.shadows }, 100),
+  },
+  levels: {
+    title: 'Levels', icon: '📊', toast: 'Levels applied',
+    controls: [
+      { key: 'blackPoint', label: 'Black Point', type: 'range', min: 0, max: 45, default: 0 },
+      { key: 'whitePoint', label: 'White Point', type: 'range', min: 55, max: 120, default: 100 },
+      { key: 'gamma', label: 'Gamma', type: 'range', min: -100, max: 100, default: 0 },
+    ],
+    render: (base, p) => applyEffects(base, { blackPoint: p.blackPoint, whitePoint: p.whitePoint, gamma: p.gamma }, 100),
+  },
+  'hue-saturation': {
+    title: 'Hue / Saturation', icon: '🎨', toast: 'Hue & saturation applied',
+    controls: [
+      { key: 'hue', label: 'Hue', type: 'range', min: -180, max: 180, default: 0, suffix: '°' },
+      { key: 'saturation', label: 'Saturation', type: 'range', min: -100, max: 100, default: 0 },
+      { key: 'lightness', label: 'Lightness', type: 'range', min: -100, max: 100, default: 0 },
+    ],
+    render: (base, p) => applyHueSaturation(base, p.hue, p.saturation, p.lightness),
+  },
+  vibrance: {
+    title: 'Vibrance', icon: '🌈', toast: 'Vibrance applied',
+    controls: [
+      { key: 'vibrance', label: 'Vibrance', type: 'range', min: -100, max: 100, default: 30 },
+      { key: 'saturation', label: 'Saturation', type: 'range', min: -100, max: 100, default: 0 },
+    ],
+    render: (base, p) => applyEffects(base, { vibrance: p.vibrance, saturation: p.saturation }, 100),
+  },
+  'black-white': {
+    title: 'Black & White', icon: '◐', toast: 'Black & white applied',
+    controls: [
+      { key: 'r', label: 'Reds', type: 'range', min: 0, max: 200, default: 30 },
+      { key: 'g', label: 'Greens', type: 'range', min: 0, max: 200, default: 59 },
+      { key: 'b', label: 'Blues', type: 'range', min: 0, max: 200, default: 11 },
+    ],
+    render: (base, p) => applyBlackAndWhite(base, { r: p.r, g: p.g, b: p.b }, 1),
+  },
+  'gaussian-blur': {
+    title: 'Gaussian Blur', icon: '🌫️', toast: 'Blur applied',
+    controls: [
+      { key: 'radius', label: 'Radius', type: 'range', min: 0, max: 30, step: 0.5, default: 4, suffix: 'px' },
+    ],
+    render: (base, p) => applyBlur(base, p.radius),
+  },
+  sharpen: {
+    title: 'Sharpen', icon: '◆', toast: 'Sharpen applied',
+    controls: [
+      { key: 'amount', label: 'Amount', type: 'range', min: 0, max: 100, default: 35 },
+    ],
+    render: (base, p) => applySharpen(base, p.amount),
+  },
+  'smart-sharpen': {
+    title: 'Smart Sharpen', icon: '✦', toast: 'Smart sharpen applied',
+    controls: [
+      { key: 'amount', label: 'Amount', type: 'range', min: 0, max: 150, default: 40 },
+      { key: 'clarity', label: 'Clarity', type: 'range', min: 0, max: 100, default: 15 },
+    ],
+    render: (base, p) => {
+      let data = applySharpen(base, p.amount);
+      if (p.clarity) data = applyEffects(data, { clarity: p.clarity }, 100);
+      return data;
+    },
+  },
+  'add-noise': {
+    title: 'Add Noise', icon: '📺', toast: 'Noise added',
+    controls: [
+      { key: 'amount', label: 'Amount', type: 'range', min: 0, max: 100, default: 20 },
+      { key: 'monochrome', label: 'Monochrome', type: 'checkbox', default: true },
+    ],
+    render: (base, p) => applyAddNoise(base, p.amount, p.monochrome),
+  },
+  pixelate: {
+    title: 'Pixelate', icon: '▦', toast: 'Pixelated',
+    controls: [
+      { key: 'size', label: 'Cell Size', type: 'range', min: 2, max: 48, default: 8, suffix: 'px' },
+    ],
+    render: (base, p) => applyEffects(base, { pixelate: p.size, previewReferenceWidth: 1200 }, 100),
+  },
+  vignette: {
+    title: 'Vignette', icon: '⬤', toast: 'Vignette applied',
+    controls: [
+      { key: 'vignette', label: 'Amount', type: 'range', min: 0, max: 100, default: 40 },
+    ],
+    render: (base, p) => applyEffects(base, { vignette: p.vignette }, 100),
+  },
+  threshold: {
+    title: 'Threshold', icon: '◧', toast: 'Threshold applied',
+    controls: [
+      { key: 'level', label: 'Level', type: 'range', min: 1, max: 254, default: 128 },
+    ],
+    render: (base, p) => applyEffects(base, { threshold: p.level }, 100),
+  },
+  posterize: {
+    title: 'Posterize', icon: '▤', toast: 'Posterized',
+    controls: [
+      { key: 'levels', label: 'Levels', type: 'range', min: 2, max: 32, default: 6 },
+    ],
+    render: (base, p) => applyEffects(base, { posterize: p.levels }, 100),
+  },
+  invert: {
+    title: 'Invert', icon: '◩', toast: 'Inverted',
+    controls: [
+      { key: 'opacity', label: 'Opacity', type: 'range', min: 0, max: 100, default: 100, suffix: '%' },
+    ],
+    render: (base, p) => {
+      const s = p.opacity / 100;
+      const d = base.data;
+      for (let i = 0; i < d.length; i += 4) {
+        d[i] = d[i] + (255 - 2 * d[i]) * s;
+        d[i + 1] = d[i + 1] + (255 - 2 * d[i + 1]) * s;
+        d[i + 2] = d[i + 2] + (255 - 2 * d[i + 2]) * s;
+      }
+      return base;
+    },
+  },
+  solarize: {
+    title: 'Solarize', icon: '☀', toast: 'Solarized',
+    controls: [
+      { key: 'amount', label: 'Amount', type: 'range', min: 0, max: 100, default: 80 },
+    ],
+    render: (base, p) => applyEffects(base, { solarize: p.amount }, 100),
+  },
+  emboss: {
+    title: 'Emboss', icon: '⛰️', toast: 'Emboss applied',
+    controls: [
+      { key: 'strength', label: 'Strength', type: 'range', min: 0.2, max: 5, step: 0.1, default: 1 },
+    ],
+    render: (base, p) => applyEmboss(base, p.strength),
+  },
+  'find-edges': {
+    title: 'Find Edges', icon: '🔲', toast: 'Edges detected',
+    controls: [
+      { key: 'strength', label: 'Strength', type: 'range', min: 0.2, max: 3, step: 0.1, default: 1 },
+    ],
+    render: (base, p) => applyEdgeDetect(base, p.strength),
+  },
+  halftone: {
+    title: 'Halftone', icon: '⠿', toast: 'Halftone applied',
+    controls: [
+      { key: 'strength', label: 'Strength', type: 'range', min: 10, max: 100, default: 75 },
+      { key: 'mode', label: 'Color', type: 'select', default: 'mono', options: [
+        { value: 'mono', label: 'Monochrome' },
+        { value: 'color', label: 'Color' },
+      ] },
+    ],
+    render: (base, p) => applyEffects(base, { halftone: p.strength, halftoneColor: p.mode === 'color' ? 'color' : 'mono', previewReferenceWidth: 1200 }, 100),
+  },
+  'gradient-map': {
+    title: 'Gradient Map', icon: '🌅', toast: 'Gradient map applied',
+    controls: [
+      { key: 'shadow', label: 'Shadows', type: 'color', default: '#1a0e3d' },
+      { key: 'mid', label: 'Midtones', type: 'color', default: '#c0426b' },
+      { key: 'highlight', label: 'Highlights', type: 'color', default: '#ffd56b' },
+      { key: 'useMid', label: 'Use Midtone', type: 'checkbox', default: true },
+      { key: 'intensity', label: 'Intensity', type: 'range', min: 0, max: 100, default: 100, suffix: '%' },
+    ],
+    render: (base, p) => applyGradientMap(base, p.shadow, p.highlight, p.useMid ? p.mid : null, p.intensity / 100),
+  },
+  sepia: {
+    title: 'Sepia', icon: '🟤', toast: 'Sepia applied',
+    controls: [
+      { key: 'intensity', label: 'Intensity', type: 'range', min: 0, max: 100, default: 80, suffix: '%' },
+    ],
+    render: (base, p) => applySepiaTone(base, p.intensity / 100),
+  },
+  'color-overlay': {
+    title: 'Color Overlay', icon: '🎭', toast: 'Color overlay applied',
+    controls: [
+      { key: 'color', label: 'Color', type: 'color', default: '#ff9500' },
+      { key: 'opacity', label: 'Opacity', type: 'range', min: 0, max: 100, default: 40, suffix: '%' },
+      { key: 'mode', label: 'Blend', type: 'select', default: 'normal', options: [
+        { value: 'normal', label: 'Normal' },
+        { value: 'multiply', label: 'Multiply' },
+        { value: 'screen', label: 'Screen' },
+        { value: 'overlay', label: 'Overlay' },
+      ] },
+    ],
+    render: (base, p) => applyColorOverlay(base, p.color, p.opacity, p.mode),
+  },
+  resize: {
+    title: 'Resize', icon: '⤢', toast: 'Image resized',
+    controls: [
+      { key: 'percent', label: 'Scale', type: 'range', min: 10, max: 200, default: 100, suffix: '%' },
+    ],
+    render: (base, p) => renderResize(base, p),
+  },
+  text: {
+    title: 'Add Text', icon: '🔤', toast: 'Text added',
+    controls: [
+      { key: 'text', label: 'Text', type: 'text', default: 'Hello' },
+      { key: 'size', label: 'Size', type: 'range', min: 1, max: 30, step: 0.5, default: 8, suffix: '%' },
+      { key: 'color', label: 'Color', type: 'color', default: '#ffffff' },
+      { key: 'font', label: 'Font', type: 'select', default: TEXT_FONTS[0].value, options: TEXT_FONTS },
+      { key: 'position', label: 'Position', type: 'select', default: 'bottom-center', options: TEXT_POSITIONS },
+      { key: 'bold', label: 'Bold', type: 'checkbox', default: false },
+      { key: 'opacity', label: 'Opacity', type: 'range', min: 0, max: 100, default: 100, suffix: '%' },
+    ],
+    render: (base, p) => renderTextOverlay(base, p),
+  },
+  timestamp: {
+    title: 'Date Stamp', icon: '📅', toast: 'Date stamp added',
+    controls: [
+      { key: 'format', label: 'Format', type: 'select', default: 'ymd', options: TIMESTAMP_FORMATS },
+      { key: 'color', label: 'Color', type: 'color', default: '#ff8800' },
+      { key: 'position', label: 'Position', type: 'select', default: 'bottom-right', options: TEXT_POSITIONS },
+      { key: 'size', label: 'Size', type: 'range', min: 1, max: 15, step: 0.5, default: 5, suffix: '%' },
+    ],
+    render: (base, p) => renderTimestamp(base, p),
+  },
+  border: {
+    title: 'Border', icon: '🖼️', toast: 'Border added',
+    controls: [
+      { key: 'style', label: 'Style', type: 'select', default: 'white', options: BORDER_STYLES },
+      { key: 'size', label: 'Size', type: 'range', min: 1, max: 15, step: 0.5, default: 5, suffix: '%' },
+      { key: 'color', label: 'Color', type: 'color', default: '#ffffff' },
+    ],
+    render: (base, p) => renderBorder(base, p),
+  },
+};
+
+const TOOL_GROUPS = [
+  { label: 'Transform', tools: [
+    { id: 'crop', label: 'Crop', icon: '✂️' },
+    { id: 'resize', label: 'Resize', icon: '⤢' },
+    { id: 'rotate-cw', label: 'Rotate →', icon: '↻' },
+    { id: 'rotate-ccw', label: 'Rotate ←', icon: '↺' },
+    { id: 'flip-h', label: 'Flip H', icon: '↔️' },
+    { id: 'flip-v', label: 'Flip V', icon: '↕️' },
+  ] },
+  { label: 'Adjust', tools: [
+    { id: 'brightness-contrast', label: 'Bright/Con', icon: '☀️' },
+    { id: 'exposure', label: 'Exposure', icon: '🌗' },
+    { id: 'levels', label: 'Levels', icon: '📊' },
+    { id: 'hue-saturation', label: 'Hue/Sat', icon: '🎨' },
+    { id: 'vibrance', label: 'Vibrance', icon: '🌈' },
+    { id: 'auto-tone', label: 'Auto Tone', icon: '◐' },
+    { id: 'auto-color', label: 'Auto Color', icon: '🖌️' },
+  ] },
+  { label: 'Filter', tools: [
+    { id: 'gaussian-blur', label: 'Blur', icon: '🌫️' },
+    { id: 'sharpen', label: 'Sharpen', icon: '◆' },
+    { id: 'smart-sharpen', label: 'Smart Sharp', icon: '✦' },
+    { id: 'add-noise', label: 'Add Noise', icon: '📺' },
+    { id: 'pixelate', label: 'Pixelate', icon: '▦' },
+    { id: 'vignette', label: 'Vignette', icon: '⬤' },
+  ] },
+  { label: 'Stylize', tools: [
+    { id: 'black-white', label: 'B&W', icon: '◑' },
+    { id: 'threshold', label: 'Threshold', icon: '◧' },
+    { id: 'posterize', label: 'Posterize', icon: '▤' },
+    { id: 'invert', label: 'Invert', icon: '◩' },
+    { id: 'emboss', label: 'Emboss', icon: '⛰️' },
+    { id: 'find-edges', label: 'Find Edges', icon: '🔲' },
+    { id: 'solarize', label: 'Solarize', icon: '☀' },
+    { id: 'halftone', label: 'Halftone', icon: '⠿' },
+  ] },
+  { label: 'Artistic', tools: [
+    { id: 'gradient-map', label: 'Gradient Map', icon: '🌅' },
+    { id: 'sepia', label: 'Sepia', icon: '🟤' },
+    { id: 'color-overlay', label: 'Overlay', icon: '🎭' },
+    { id: 'retouch', label: 'Retouch', icon: '🖌️' },
+  ] },
+  { label: 'Overlays', tools: [
+    { id: 'text', label: 'Add Text', icon: '🔤' },
+    { id: 'timestamp', label: 'Date Stamp', icon: '📅' },
+    { id: 'border', label: 'Border', icon: '🖼️' },
+  ] },
+  { label: 'Library', tools: [
+    { id: 'favorite-current', label: 'Favorite', icon: '⭐' },
+    { id: 'default-current', label: 'Default Cam', icon: '●' },
+    { id: 'save-preset', label: 'Save Preset', icon: '💽' },
+    { id: 'gallery', label: 'Gallery', icon: '🖼️' },
+  ] },
+];
+
 let stockImage = null;
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -1095,49 +1436,6 @@ function updateHistogram(imageData) {
   });
 }
 
-function applyImageOperation(message, operation) {
-  const state = getState();
-  if (!state.currentImageData) return;
-  const result = operation(cloneImageData(state.currentImageData));
-  setState({ currentImageData: result });
-  pushHistory(result);
-  renderCanvas(result);
-  const newHist = [...getState().history];
-  newHist[0] = result;
-  setState({ history: newHist, activePreset: null });
-  showToast(message);
-}
-
-function invertImageData(imageData) {
-  const d = imageData.data;
-  for (let i = 0; i < d.length; i += 4) {
-    d[i] = 255 - d[i];
-    d[i + 1] = 255 - d[i + 1];
-    d[i + 2] = 255 - d[i + 2];
-  }
-  return imageData;
-}
-
-function thresholdImageData(imageData, threshold) {
-  const d = imageData.data;
-  for (let i = 0; i < d.length; i += 4) {
-    const v = d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722 >= threshold ? 255 : 0;
-    d[i] = v; d[i + 1] = v; d[i + 2] = v;
-  }
-  return imageData;
-}
-
-function posterizeImageData(imageData, levels) {
-  const d = imageData.data;
-  const step = 255 / (levels - 1);
-  for (let i = 0; i < d.length; i += 4) {
-    d[i] = Math.round(d[i] / step) * step;
-    d[i + 1] = Math.round(d[i + 1] / step) * step;
-    d[i + 2] = Math.round(d[i + 2] / step) * step;
-  }
-  return imageData;
-}
-
 function autoColor() {
   const source = getState().currentImageData || getState().history[0];
   if (!source) { showToast('Load a photo first'); return; }
@@ -1202,7 +1500,12 @@ function closeRetouchOptions() {
   retouchActive = false;
   retouchPainting = false;
   retouchBase = null;
-  $('tool-options')?.classList.add('hidden');
+  const options = $('tool-options');
+  if (options) {
+    options.classList.add('hidden');
+    options.innerHTML = '';
+  }
+  toolsGrid.querySelectorAll('.tool-btn.active').forEach(btn => btn.classList.remove('active'));
 }
 
 function getCanvasPoint(e) {
@@ -1355,37 +1658,331 @@ function performPixelCrush(val, source) {
 }
 
 function buildToolsPanel() {
-  const tools = [
-    { id:'crop', label:'Crop', icon:'✂️' },
-    { id:'auto-tone', label:'Auto Tone', icon:'◐' },
-    { id:'auto-color', label:'Auto Color', icon:'🎨' },
-    { id:'smart-sharpen', label:'Smart Sharp', icon:'◆' },
-    { id:'rotate-cw', label:'Rotate →', icon:'↻' },
-    { id:'rotate-ccw', label:'Rotate ←', icon:'↺' },
-    { id:'flip-h', label:'Flip H', icon:'↔️' },
-    { id:'flip-v', label:'Flip V', icon:'↕️' },
-    { id:'invert', label:'Invert', icon:'◩' },
-    { id:'threshold', label:'Threshold', icon:'◧' },
-    { id:'posterize', label:'Posterize', icon:'▦' },
-    { id:'retouch', label:'Retouch', icon:'🖌️' },
-    { id:'timestamp', label:'Date Stamp', icon:'📅' },
-    { id:'border', label:'Film Border', icon:'🖼️' },
-    { id:'favorite-current', label:'Favorite', icon:'⭐' },
-    { id:'default-current', label:'Default Cam', icon:'●' },
-    { id:'save-preset', label:'Save Preset', icon:'💽' },
-    { id:'gallery', label:'Gallery', icon:'🖼️' },
-  ];
-  toolsGrid.innerHTML = tools.map(t =>
-    `<button class="tool-btn" data-tool="${t.id}"><span style="font-size:20px">${t.icon}</span>${t.label}</button>`
-  ).join('');
+  toolsGrid.innerHTML = TOOL_GROUPS.map(group => `
+    <div class="tool-group-label">${group.label}</div>
+    <div class="tool-group-grid">
+      ${group.tools.map(t => `<button class="tool-btn" data-tool="${t.id}"><span style="font-size:20px">${t.icon}</span>${t.label}</button>`).join('')}
+    </div>
+  `).join('');
   toolsGrid.addEventListener('click', e => {
     const btn = e.target.closest('.tool-btn');
     if (btn) handleTool(btn.dataset.tool);
   });
 }
 
+function markToolActive(toolId) {
+  toolsGrid.querySelectorAll('.tool-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tool === toolId);
+  });
+}
+
+// ===== Customizable tool dialog framework =====
+let activeDialog = null;
+let dialogPreviewTimer = null;
+
+function previewToCanvas(imageData) {
+  if (!imageData) return;
+  if (mainCanvas.width !== imageData.width || mainCanvas.height !== imageData.height) {
+    mainCanvas.width = imageData.width;
+    mainCanvas.height = imageData.height;
+  }
+  ctx.putImageData(imageData, 0, 0);
+  updateHistogram(imageData);
+}
+
+function commitDialogResult(result, message) {
+  if (mainCanvas.width !== result.width || mainCanvas.height !== result.height) {
+    mainCanvas.width = result.width;
+    mainCanvas.height = result.height;
+  }
+  setState({ currentImageData: result });
+  pushHistory(result);
+  const newHistory = [...getState().history];
+  newHistory[0] = result;
+  setState({ history: newHistory, activePreset: null });
+  renderCanvas(result);
+  if (message) showToast(message);
+}
+
+function openFilterDialog(toolId) {
+  const cfg = TOOL_DIALOGS[toolId];
+  if (!cfg) return;
+  if (!getState().currentImageData) { showToast('Load a photo first'); return; }
+  if (activeDialog) cancelDialog();
+  closeRetouchOptions();
+
+  const params = {};
+  cfg.controls.forEach(control => { params[control.key] = control.default; });
+  activeDialog = { id: toolId, cfg, base: cloneImageData(getState().currentImageData), params, lastResult: null };
+  renderDialogUI();
+  markToolActive(toolId);
+  scheduleDialogPreview();
+}
+
+function renderDialogControl(control, value) {
+  const suffix = control.suffix || '';
+  if (control.type === 'range') {
+    return `<label class="pro-slider"><span>${control.label}<strong id="dlg-val-${control.key}">${value}${suffix}</strong></span>
+      <input type="range" min="${control.min}" max="${control.max}" step="${control.step || 1}" value="${value}" data-dialog-key="${control.key}" data-dialog-type="range" /></label>`;
+  }
+  if (control.type === 'color') {
+    return `<label class="dialog-row"><span>${control.label}</span>
+      <input type="color" value="${value}" data-dialog-key="${control.key}" data-dialog-type="color" /></label>`;
+  }
+  if (control.type === 'select') {
+    return `<label class="dialog-row"><span>${control.label}</span>
+      <select data-dialog-key="${control.key}" data-dialog-type="select">${control.options.map(o => `<option value="${o.value}"${o.value === value ? ' selected' : ''}>${o.label}</option>`).join('')}</select></label>`;
+  }
+  if (control.type === 'checkbox') {
+    return `<label class="dialog-row dialog-check"><span>${control.label}</span>
+      <input type="checkbox"${value ? ' checked' : ''} data-dialog-key="${control.key}" data-dialog-type="checkbox" /></label>`;
+  }
+  if (control.type === 'text') {
+    return `<label class="dialog-row dialog-text"><span>${control.label}</span>
+      <input type="text" value="${escapeHtml(String(value))}" maxlength="80" data-dialog-key="${control.key}" data-dialog-type="text" /></label>`;
+  }
+  return '';
+}
+
+function renderDialogUI() {
+  const { cfg, params } = activeDialog;
+  const options = $('tool-options');
+  options.classList.remove('hidden');
+  options.innerHTML = `
+    <div class="tool-dialog">
+      <div class="tool-options-header">
+        <strong>${cfg.icon || ''} ${escapeHtml(cfg.title)}</strong>
+        <button data-dialog-action="cancel" class="topbar-btn" aria-label="Cancel">×</button>
+      </div>
+      <div class="tool-dialog-controls">
+        ${cfg.controls.map(control => renderDialogControl(control, params[control.key])).join('')}
+      </div>
+      <div class="tool-dialog-actions">
+        <button class="btn btn-secondary" data-dialog-action="reset">Reset</button>
+        <button class="btn btn-secondary" data-dialog-action="cancel">Cancel</button>
+        <button class="btn btn-primary" data-dialog-action="apply">Apply</button>
+      </div>
+    </div>`;
+  options.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function findDialogControl(key) {
+  return activeDialog?.cfg.controls.find(control => control.key === key);
+}
+
+function onDialogInput(e) {
+  if (!activeDialog) return;
+  const el = e.target.closest('[data-dialog-key]');
+  if (!el) return;
+  const key = el.dataset.dialogKey;
+  const type = el.dataset.dialogType;
+  let value;
+  if (type === 'range') {
+    value = parseFloat(el.value);
+    const label = $(`dlg-val-${key}`);
+    if (label) label.textContent = value + (findDialogControl(key)?.suffix || '');
+  } else if (type === 'checkbox') {
+    value = el.checked;
+  } else {
+    value = el.value;
+  }
+  activeDialog.params[key] = value;
+  scheduleDialogPreview();
+}
+
+function onDialogClick(e) {
+  const action = e.target.closest('[data-dialog-action]')?.dataset.dialogAction;
+  if (!action || !activeDialog) return;
+  if (action === 'apply') applyDialog();
+  else if (action === 'cancel') cancelDialog();
+  else if (action === 'reset') resetDialog();
+}
+
+function scheduleDialogPreview() {
+  clearTimeout(dialogPreviewTimer);
+  dialogPreviewTimer = setTimeout(renderDialogPreview, 45);
+}
+
+function renderDialogPreview() {
+  if (!activeDialog) return;
+  try {
+    const result = activeDialog.cfg.render(cloneImageData(activeDialog.base), activeDialog.params);
+    activeDialog.lastResult = result;
+    previewToCanvas(result);
+  } catch (err) {
+    console.warn('Dialog preview failed', err);
+  }
+}
+
+function applyDialog() {
+  if (!activeDialog) return;
+  const { cfg, base, params } = activeDialog;
+  const result = cfg.render(cloneImageData(base), params);
+  commitDialogResult(result, cfg.toast || `${cfg.title} applied`);
+  finishDialog();
+}
+
+function cancelDialog() {
+  if (!activeDialog) return;
+  previewToCanvas(activeDialog.base);
+  finishDialog();
+}
+
+function resetDialog() {
+  if (!activeDialog) return;
+  activeDialog.cfg.controls.forEach(control => { activeDialog.params[control.key] = control.default; });
+  renderDialogUI();
+  renderDialogPreview();
+}
+
+function finishDialog() {
+  clearTimeout(dialogPreviewTimer);
+  activeDialog = null;
+  const options = $('tool-options');
+  options.classList.add('hidden');
+  options.innerHTML = '';
+  toolsGrid.querySelectorAll('.tool-btn.active').forEach(btn => btn.classList.remove('active'));
+}
+
+// ===== Render helpers for size/text-changing tools =====
+function renderResize(base, p) {
+  const scale = p.percent / 100;
+  const nw = Math.max(1, Math.round(base.width * scale));
+  const nh = Math.max(1, Math.round(base.height * scale));
+  const src = createWorkCanvas(base.width, base.height);
+  src.getContext('2d').putImageData(base, 0, 0);
+  const oc = createWorkCanvas(nw, nh);
+  const c = oc.getContext('2d');
+  c.imageSmoothingEnabled = true;
+  c.imageSmoothingQuality = 'high';
+  c.drawImage(src, 0, 0, nw, nh);
+  return c.getImageData(0, 0, nw, nh);
+}
+
+function computeTextAnchor(position, w, h, pad) {
+  const [vert, horiz = 'center'] = position.split('-');
+  let x, align;
+  if (horiz === 'left') { x = pad; align = 'left'; }
+  else if (horiz === 'right') { x = w - pad; align = 'right'; }
+  else { x = w / 2; align = 'center'; }
+  let y, baseline;
+  if (vert === 'top') { y = pad; baseline = 'top'; }
+  else if (vert === 'bottom') { y = h - pad; baseline = 'alphabetic'; }
+  else { y = h / 2; baseline = 'middle'; }
+  return { x, y, align, baseline };
+}
+
+function renderTextOverlay(base, p) {
+  const w = base.width, h = base.height;
+  const oc = createWorkCanvas(w, h);
+  const c = oc.getContext('2d');
+  c.putImageData(base, 0, 0);
+  const fs = Math.max(8, Math.round(w * (p.size / 100)));
+  c.font = `${p.bold ? 'bold ' : ''}${fs}px ${p.font}`;
+  c.fillStyle = p.color;
+  c.globalAlpha = Math.min(1, Math.max(0, p.opacity / 100));
+  const pad = Math.max(8, Math.round(fs * 0.5));
+  const anchor = computeTextAnchor(p.position, w, h, pad);
+  c.textAlign = anchor.align;
+  c.textBaseline = anchor.baseline;
+  c.shadowColor = 'rgba(0,0,0,0.45)';
+  c.shadowBlur = Math.max(2, fs * 0.08);
+  c.fillText(p.text || '', anchor.x, anchor.y);
+  c.globalAlpha = 1;
+  return c.getImageData(0, 0, w, h);
+}
+
+function formatTimestamp(fmt) {
+  const d = new Date();
+  const yy = String(d.getFullYear()).slice(2);
+  const yyyy = String(d.getFullYear());
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  switch (fmt) {
+    case 'dmy': return `${dd}/${mm}/${yyyy}`;
+    case 'mdy': return `${mm}/${dd}/${yyyy}`;
+    case 'full': return `${months[d.getMonth()]} ${dd}, ${yyyy}`;
+    case 'datetime': return `${yyyy}-${mm}-${dd} ${hh}:${min}`;
+    case 'ymd':
+    default: return `'${yy} ${mm} ${dd}`;
+  }
+}
+
+function renderTimestamp(base, p) {
+  const w = base.width, h = base.height;
+  const oc = createWorkCanvas(w, h);
+  const c = oc.getContext('2d');
+  c.putImageData(base, 0, 0);
+  const fs = Math.max(12, Math.round(w * (p.size / 100)));
+  c.font = `${fs}px "VT323", monospace`;
+  c.fillStyle = p.color;
+  const pad = Math.max(8, Math.round(fs * 0.5));
+  const anchor = computeTextAnchor(p.position, w, h, pad);
+  c.textAlign = anchor.align;
+  c.textBaseline = anchor.baseline;
+  c.shadowColor = 'rgba(0,0,0,0.5)';
+  c.shadowBlur = Math.max(2, fs * 0.1);
+  c.fillText(formatTimestamp(p.format), anchor.x, anchor.y);
+  return c.getImageData(0, 0, w, h);
+}
+
+function roundRectPath(c, x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2);
+  c.beginPath();
+  c.moveTo(x + radius, y);
+  c.arcTo(x + w, y, x + w, y + h, radius);
+  c.arcTo(x + w, y + h, x, y + h, radius);
+  c.arcTo(x, y + h, x, y, radius);
+  c.arcTo(x, y, x + w, y, radius);
+  c.closePath();
+}
+
+function renderBorder(base, p) {
+  const w = base.width, h = base.height;
+  const bs = Math.max(4, Math.round(Math.min(w, h) * (p.size / 100)));
+  let bg = p.color;
+  let extraBottom = 0;
+  if (p.style === 'white') bg = '#ffffff';
+  else if (p.style === 'black' || p.style === 'film') bg = '#0d0d0d';
+  else if (p.style === 'polaroid') { bg = '#f7f4ec'; extraBottom = Math.round(bs * 2.4); }
+
+  const ow = w + bs * 2;
+  const oh = h + bs * 2 + extraBottom;
+  const oc = createWorkCanvas(ow, oh);
+  const c = oc.getContext('2d');
+  c.fillStyle = bg;
+  c.fillRect(0, 0, ow, oh);
+
+  const src = createWorkCanvas(w, h);
+  src.getContext('2d').putImageData(base, 0, 0);
+
+  if (p.style === 'rounded') {
+    c.save();
+    roundRectPath(c, bs, bs, w, h, bs);
+    c.clip();
+    c.drawImage(src, bs, bs);
+    c.restore();
+  } else {
+    c.drawImage(src, bs, bs);
+  }
+
+  if (p.style === 'film') {
+    const lw = Math.max(1, Math.round(bs * 0.08));
+    c.strokeStyle = 'rgba(255,255,255,0.85)';
+    c.lineWidth = lw;
+    c.strokeRect(bs - lw, bs - lw, w + lw * 2, h + lw * 2);
+  }
+
+  return c.getImageData(0, 0, ow, oh);
+}
+
 function handleTool(tool) {
   const state = getState();
+
+  // Library / preset actions don't require a loaded image.
   if (tool === 'save-preset') { openCustomPresetModal(); return; }
   if (tool === 'gallery') { openGalleryModal(); return; }
   if (tool === 'favorite-current') {
@@ -1399,71 +1996,52 @@ function handleTool(tool) {
     setDefaultPreset(state.activePreset);
     return;
   }
-  if (!state.imageLoaded) { showToast('Load a photo first'); return; }
-  const data = state.currentImageData;
-  const w = data.width, h = data.height;
 
-  if (tool === 'crop') {
-    startCrop();
-  } else if (tool === 'auto-tone') {
-    autoEnhance();
-  } else if (tool === 'auto-color') {
-    autoColor();
-  } else if (tool === 'smart-sharpen') {
-    applyImageOperation('Smart sharpen applied', data => applySharpen(data, 28));
-  } else if (tool === 'invert') {
-    applyImageOperation('Inverted', invertImageData);
-  } else if (tool === 'threshold') {
-    applyImageOperation('Threshold applied', data => thresholdImageData(data, 128));
-  } else if (tool === 'posterize') {
-    applyImageOperation('Posterized', data => posterizeImageData(data, 6));
-  } else if (tool === 'retouch') {
-    openRetouchOptions();
-  } else if (tool === 'rotate-cw' || tool === 'rotate-ccw') {
-    const oc = createWorkCanvas(h, w);
-    const octx = oc.getContext('2d');
-    const src = createWorkCanvas(w, h);
-    src.getContext('2d').putImageData(data, 0, 0);
-    octx.translate(tool === 'rotate-cw' ? h : 0, tool === 'rotate-cw' ? 0 : w);
-    octx.rotate(tool === 'rotate-cw' ? Math.PI / 2 : -Math.PI / 2);
-    octx.drawImage(src, 0, 0);
-    mainCanvas.width = h; mainCanvas.height = w;
-    const nd = octx.getImageData(0, 0, h, w);
-    setState({ currentImageData: nd }); 
-    const newHist = [...getState().history]; newHist[0] = nd;
-    setState({ history: newHist });
-    pushHistory(nd); renderCanvas(nd);
-  } else if (tool === 'flip-h' || tool === 'flip-v') {
-    const oc = createWorkCanvas(w, h);
-    const octx = oc.getContext('2d');
-    const src = createWorkCanvas(w, h);
-    src.getContext('2d').putImageData(data, 0, 0);
-    if (tool === 'flip-h') { octx.translate(w, 0); octx.scale(-1, 1); }
-    else { octx.translate(0, h); octx.scale(1, -1); }
-    octx.drawImage(src, 0, 0);
-    const nd = octx.getImageData(0, 0, w, h);
-    setState({ currentImageData: nd });
-    const newHist_ = [...getState().history]; newHist_[0] = nd;
-    setState({ history: newHist_ });
-    pushHistory(nd); renderCanvas(nd);
-  } else if (tool === 'timestamp') {
-    const oc = createWorkCanvas(w, h);
-    const octx = oc.getContext('2d');
-    octx.putImageData(data, 0, 0);
-    const fs = Math.max(14, Math.floor(w / 20));
-    octx.font = `${fs}px "VT323", monospace`;
-    octx.fillStyle = '#ff6600cc';
-    octx.textAlign = 'right';
-    const now = new Date();
-    octx.fillText(`'${String(now.getFullYear()).slice(2)} ${String(now.getMonth()+1).padStart(2,'0')} ${String(now.getDate()).padStart(2,'0')}`, w - fs * 0.5, h - fs * 0.5);
-    const nd = octx.getImageData(0, 0, w, h);
-    setState({ currentImageData: nd }); pushHistory(nd); renderCanvas(nd);
-    showToast('Date stamp added!');
-  } else if (tool === 'border') {
-    addBorder();
-  } else {
-    showToast(`${tool} coming soon!`);
-  }
+  if (!state.imageLoaded) { showToast('Load a photo first'); return; }
+
+  // Switching tools cancels any in-progress dialog or retouch session.
+  if (activeDialog && tool !== activeDialog.id) cancelDialog();
+  if (retouchActive && tool !== 'retouch') closeRetouchOptions();
+
+  if (tool === 'crop') { startCrop(); return; }
+  if (tool === 'retouch') { openRetouchOptions(); markToolActive('retouch'); return; }
+  if (tool === 'auto-tone') { autoEnhance(); return; }
+  if (tool === 'auto-color') { autoColor(); return; }
+  if (tool === 'rotate-cw' || tool === 'rotate-ccw') { rotateImage(tool === 'rotate-cw'); return; }
+  if (tool === 'flip-h' || tool === 'flip-v') { flipImage(tool === 'flip-h'); return; }
+
+  if (TOOL_DIALOGS[tool]) { openFilterDialog(tool); return; }
+
+  showToast(`${tool} coming soon!`);
+}
+
+function rotateImage(clockwise) {
+  const data = getState().currentImageData;
+  const w = data.width, h = data.height;
+  const oc = createWorkCanvas(h, w);
+  const octx = oc.getContext('2d');
+  const src = createWorkCanvas(w, h);
+  src.getContext('2d').putImageData(data, 0, 0);
+  octx.translate(clockwise ? h : 0, clockwise ? 0 : w);
+  octx.rotate(clockwise ? Math.PI / 2 : -Math.PI / 2);
+  octx.drawImage(src, 0, 0);
+  mainCanvas.width = h; mainCanvas.height = w;
+  const nd = octx.getImageData(0, 0, h, w);
+  commitDialogResult(nd, clockwise ? 'Rotated right' : 'Rotated left');
+}
+
+function flipImage(horizontal) {
+  const data = getState().currentImageData;
+  const w = data.width, h = data.height;
+  const oc = createWorkCanvas(w, h);
+  const octx = oc.getContext('2d');
+  const src = createWorkCanvas(w, h);
+  src.getContext('2d').putImageData(data, 0, 0);
+  if (horizontal) { octx.translate(w, 0); octx.scale(-1, 1); }
+  else { octx.translate(0, h); octx.scale(1, -1); }
+  octx.drawImage(src, 0, 0);
+  const nd = octx.getImageData(0, 0, w, h);
+  commitDialogResult(nd, horizontal ? 'Flipped horizontally' : 'Flipped vertically');
 }
 
 let cropActive = false;
@@ -1564,39 +2142,6 @@ function performCrop(x, y, w, h) {
   pushHistory(nd);
   renderCanvas(nd);
   showToast('Cropped!');
-}
-
-function addBorder() {
-  const state = getState();
-  const data = state.currentImageData;
-  const w = data.width, h = data.height;
-  const borderSize = Math.max(20, Math.floor(w * 0.05));
-  
-  const oc = createWorkCanvas(w + borderSize * 2, h + borderSize * 2);
-  const octx = oc.getContext('2d');
-  
-  // White film border
-  octx.fillStyle = '#fff';
-  octx.fillRect(0, 0, oc.width, oc.height);
-  
-  // Inner shadow/border
-  octx.strokeStyle = '#ddd';
-  octx.lineWidth = 1;
-  octx.strokeRect(borderSize - 1, borderSize - 1, w + 2, h + 2);
-  
-  const src = createWorkCanvas(w, h);
-  src.getContext('2d').putImageData(data, 0, 0);
-  octx.drawImage(src, borderSize, borderSize);
-  
-  mainCanvas.width = oc.width;
-  mainCanvas.height = oc.height;
-  const nd = octx.getImageData(0, 0, oc.width, oc.height);
-  setState({ currentImageData: nd });
-  const newHist = [...getState().history]; newHist[0] = nd;
-  setState({ history: newHist });
-  pushHistory(nd);
-  renderCanvas(nd);
-  showToast('Film border added!');
 }
 
 function bindEvents() {
@@ -1734,6 +2279,11 @@ function bindEvents() {
   mainCanvas.addEventListener('pointermove', moveRetouchStroke);
   window.addEventListener('pointerup', endRetouchStroke);
 
+  const toolOptions = $('tool-options');
+  toolOptions?.addEventListener('input', onDialogInput);
+  toolOptions?.addEventListener('change', onDialogInput);
+  toolOptions?.addEventListener('click', onDialogClick);
+
   document.addEventListener('dragover', e => e.preventDefault());
   document.addEventListener('drop', e => {
     e.preventDefault();
@@ -1743,6 +2293,10 @@ function bindEvents() {
 }
 
 function switchPanel(panel) {
+  if (panel !== 'tools') {
+    if (activeDialog) cancelDialog();
+    if (retouchActive) closeRetouchOptions();
+  }
   document.querySelectorAll('.panel-tab').forEach(t => t.classList.toggle('active', t.dataset.panel === panel));
   document.querySelectorAll('.panel-content').forEach(p => p.classList.remove('active'));
   $(panel + '-panel')?.classList.add('active');
