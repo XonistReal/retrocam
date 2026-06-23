@@ -165,6 +165,8 @@ export function applyEffects(imageData, fx, intensity = 100) {
   if (fx.pixelate) result = applyPixelate(result, Math.round(fx.pixelate * factor * resScale));
   // Halftone/dot-matrix print texture should sit on top of the image.
   if (fx.halftone) result = applyHalftone(result, fx.halftone * factor, fx.halftoneColor);
+  // Preset profile finishing adds filmic rolloff, tasteful color bias, and skin protection.
+  if (fx.profile) result = applyPresetProfile(result, fx.profile, factor);
 
   return result;
 }
@@ -653,6 +655,78 @@ function applyHalftone(imageData, strength, colorMode) {
   }
 
   return new ImageData(out, w, h);
+}
+
+function applyPresetProfile(imageData, profile, intensity = 1) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const s = Math.min(1, Math.max(0, intensity));
+  const config = getProfileConfig(profile);
+  if (!config) return imageData;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    const l = luminance(d, i) / 255;
+    const skin = detectSkinTone(r, g, b);
+    const curve = applyProfileCurve(l, config);
+    const ratio = l > 0 ? curve / l : curve;
+
+    let nr = clamp(r * ratio);
+    let ng = clamp(g * ratio);
+    let nb = clamp(b * ratio);
+
+    nr = clamp(nr + config.red * s * 18);
+    ng = clamp(ng + config.green * s * 18);
+    nb = clamp(nb + config.blue * s * 18);
+
+    const saturation = 1 + config.saturation * s;
+    const gray = nr * 0.2126 + ng * 0.7152 + nb * 0.0722;
+    nr = gray + (nr - gray) * saturation;
+    ng = gray + (ng - gray) * saturation;
+    nb = gray + (nb - gray) * saturation;
+
+    if (skin && config.skinProtect) {
+      const warmth = config.skinWarmth * s;
+      nr = mix(nr, r + warmth * 14, 0.45);
+      ng = mix(ng, g + warmth * 6, 0.35);
+      nb = mix(nb, b - warmth * 8, 0.35);
+    }
+
+    d[i] = clamp(nr);
+    d[i + 1] = clamp(ng);
+    d[i + 2] = clamp(nb);
+  }
+
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+function getProfileConfig(profile) {
+  const key = Array.isArray(profile) ? profile[0] : profile;
+  const profiles = {
+    film: { toe: 0.025, shoulder: 0.075, contrast: 0.04, red: 0.16, green: 0.04, blue: -0.08, saturation: 0.03, skinProtect: true, skinWarmth: 0.45 },
+    '90s': { toe: 0.04, shoulder: 0.08, contrast: 0.02, red: 0.12, green: 0.02, blue: -0.04, saturation: -0.01, skinProtect: true, skinWarmth: 0.32 },
+    '2000s': { toe: -0.01, shoulder: -0.035, contrast: 0.08, red: -0.04, green: 0.06, blue: 0.12, saturation: 0.04, skinProtect: true, skinWarmth: 0.12 },
+    disposable: { toe: 0.05, shoulder: 0.045, contrast: 0.03, red: 0.14, green: 0.03, blue: -0.06, saturation: 0.02, skinProtect: true, skinWarmth: 0.38 },
+    compression: { toe: -0.015, shoulder: -0.025, contrast: 0.07, red: 0.02, green: 0.02, blue: 0.02, saturation: -0.01, skinProtect: false, skinWarmth: 0 },
+    glitch: { toe: -0.02, shoulder: -0.02, contrast: 0.1, red: 0.04, green: -0.02, blue: 0.08, saturation: 0.06, skinProtect: false, skinWarmth: 0 },
+    color: { toe: 0.015, shoulder: 0.035, contrast: 0.03, red: 0.04, green: 0.02, blue: 0.02, saturation: 0.02, skinProtect: true, skinWarmth: 0.18 },
+    lens: { toe: 0.02, shoulder: 0.05, contrast: 0.025, red: 0.03, green: 0.02, blue: 0.01, saturation: 0.01, skinProtect: true, skinWarmth: 0.15 },
+    texture: { toe: 0.035, shoulder: 0.02, contrast: 0.05, red: 0.05, green: 0.02, blue: -0.03, saturation: -0.03, skinProtect: false, skinWarmth: 0 },
+    custom: { toe: 0.02, shoulder: 0.04, contrast: 0.025, red: 0.03, green: 0.02, blue: 0, saturation: 0.01, skinProtect: true, skinWarmth: 0.22 },
+  };
+  return profiles[key] || null;
+}
+
+function applyProfileCurve(l, config) {
+  const lifted = l + (1 - l) * config.toe;
+  const rolled = lifted - Math.pow(Math.max(0, lifted - 0.72), 2) * config.shoulder * 2.6;
+  const contrasted = 0.5 + (rolled - 0.5) * (1 + config.contrast);
+  return Math.min(1, Math.max(0, contrasted));
+}
+
+function detectSkinTone(r, g, b) {
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  return r > 70 && g > 35 && b > 20 && r > g * 0.95 && g > b * 0.8 && max - min > 18;
 }
 
 function applyChromaticAberration(imageData, amount) {
