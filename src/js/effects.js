@@ -27,6 +27,27 @@ function dataUrlToBlob(dataUrl) {
   return new Blob([bytes], { type: mime });
 }
 
+const clamp = value => Math.min(255, Math.max(0, value));
+const mix = (a, b, t) => a * (1 - t) + b * t;
+const luminance = (data, index) => data[index] * 0.2126 + data[index + 1] * 0.7152 + data[index + 2] * 0.0722;
+const smoothstep = (edge0, edge1, value) => {
+  const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0 || 1)));
+  return t * t * (3 - 2 * t);
+};
+
+function parseHexColor(hex) {
+  const value = hex.replace('#', '');
+  const normalized = value.length === 3
+    ? value.split('').map(char => char + char).join('')
+    : value.padEnd(6, '0').slice(0, 6);
+
+  return [
+    parseInt(normalized.slice(0, 2), 16),
+    parseInt(normalized.slice(2, 4), 16),
+    parseInt(normalized.slice(4, 6), 16),
+  ];
+}
+
 function canvasToBlob(canvas, type, quality) {
   if (typeof canvas.convertToBlob === 'function') {
     return canvas.convertToBlob({ type, quality });
@@ -83,6 +104,8 @@ export function applyEffects(imageData, fx, intensity = 100) {
   if (fx.exposure) applyExposure(data, fx.exposure * factor);
   // Saturation
   if (fx.saturation) applySaturation(data, fx.saturation * factor);
+  // Vibrance protects already-saturated colors and skin tones better than saturation.
+  if (fx.vibrance) applyVibrance(data, fx.vibrance * factor);
   // Temperature
   if (fx.temperature) applyTemperature(data, fx.temperature * factor);
   // Tint
@@ -96,9 +119,15 @@ export function applyEffects(imageData, fx, intensity = 100) {
   if (fx.bitDepth) applyBitDepth(data, fx.bitDepth);
   // Thermal
   if (fx.thermal) applyThermal(data);
+  // Direct flash / low dynamic range looks
+  if (fx.flash) applyFlash(data, w, h, fx.flash * factor);
 
   let result = new ImageData(data, w, h);
 
+  // Print / specialty color processes
+  if (fx.duotone) result = applyDuotone(result, fx.duotone, factor);
+  if (fx.solarize) result = applySolarize(result, fx.solarize * factor);
+  if (fx.infrared) result = applyInfrared(result, fx.infrared * factor);
   // Channel shift (RGB split) - scale with resolution
   if (fx.channelShift) result = applyChannelShift(result, Math.round(fx.channelShift * factor * resScale));
   // Scanlines
@@ -118,13 +147,24 @@ export function applyEffects(imageData, fx, intensity = 100) {
   // Chromatic aberration - scale with resolution
   if (fx.chromatic) result = applyChromaticAberration(result, fx.chromatic * factor * resScale);
   // Lens distortion (Barrel / Fisheye)
-  if (fx.barrel || fx.fisheye) result = applyLensDistortion(result, (fx.barrel || 0) + (fx.fisheye || 0) * factor);
+  if (fx.barrel || fx.fisheye || fx.pincushion) {
+    const strength = ((fx.barrel || 0) + (fx.fisheye || 0) - (fx.pincushion || 0)) * factor;
+    result = applyLensDistortion(result, strength);
+  }
+  // Optical specialty effects
+  if (fx.tiltshift) result = applyTiltShift(result, typeof fx.tiltshift === 'number' ? fx.tiltshift * factor : 55 * factor);
+  if (fx.doubleExposure) result = applyDoubleExposure(result, fx.doubleExposure * factor);
+  if (fx.anamorphic) result = applyAnamorphicFlare(result, fx.anamorphic * factor);
   // Datamosh simulation
   if (fx.datamosh) result = applyDatamosh(result, fx.datamosh * factor);
+  // Pixel sorting glitch
+  if (fx.pixelSort) result = applyPixelSort(result, fx.pixelSort, factor);
   // Color reduction
   if (fx.colorReduce) result = applyColorReduction(result, fx.colorReduce, fx.dither);
   // Pixelate - scale with resolution
   if (fx.pixelate) result = applyPixelate(result, Math.round(fx.pixelate * factor * resScale));
+  // Halftone/dot-matrix print texture should sit on top of the image.
+  if (fx.halftone) result = applyHalftone(result, fx.halftone * factor, fx.halftoneColor);
 
   return result;
 }
@@ -248,6 +288,19 @@ function applySaturation(data, val) {
   }
 }
 
+function applyVibrance(data, val) {
+  const amount = val / 100;
+  for (let i = 0; i < data.length; i += 4) {
+    const max = Math.max(data[i], data[i + 1], data[i + 2]);
+    const avg = (data[i] + data[i + 1] + data[i + 2]) / 3;
+    const satGap = (max - avg) / 255;
+    const adjustment = amount * (1 - satGap);
+    data[i] += (max - data[i]) * adjustment;
+    data[i + 1] += (max - data[i + 1]) * adjustment;
+    data[i + 2] += (max - data[i + 2]) * adjustment;
+  }
+}
+
 function applyTemperature(data, val) {
   const t = val * 1.5;
   for (let i = 0; i < data.length; i += 4) {
@@ -313,7 +366,85 @@ function applyThermal(data) {
   }
 }
 
+function applyFlash(data, w, h, strength) {
+  const s = strength / 100;
+  const cx = w / 2;
+  const cy = h * 0.44;
+  const maxR = Math.sqrt(cx * cx + cy * cy);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const dx = x - cx;
+      const dy = y - cy;
+      const dist = Math.sqrt(dx * dx + dy * dy) / maxR;
+      const center = Math.max(0, 1 - dist * 1.55);
+      const edge = Math.min(1, dist * 1.3);
+      const pop = center * s;
+      const falloff = edge * s * 0.55;
+
+      data[i] = clamp(data[i] + 105 * pop - data[i] * falloff);
+      data[i + 1] = clamp(data[i + 1] + 92 * pop - data[i + 1] * falloff);
+      data[i + 2] = clamp(data[i + 2] + 72 * pop - data[i + 2] * falloff);
+    }
+  }
+}
+
 // --- ImageData-level effects ---
+function applyDuotone(imageData, palette, intensity = 1) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const colors = Array.isArray(palette) ? palette : ['#1d1b16', '#f5d180'];
+  const shadow = parseHexColor(colors[0] || '#111111');
+  const highlight = parseHexColor(colors[1] || '#f2f2f2');
+  const s = Math.min(1, Math.max(0, intensity));
+
+  for (let i = 0; i < d.length; i += 4) {
+    const l = luminance(d, i) / 255;
+    const curve = smoothstep(0.02, 0.98, l);
+    d[i] = mix(d[i], mix(shadow[0], highlight[0], curve), s);
+    d[i + 1] = mix(d[i + 1], mix(shadow[1], highlight[1], curve), s);
+    d[i + 2] = mix(d[i + 2], mix(shadow[2], highlight[2], curve), s);
+  }
+
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+function applySolarize(imageData, strength) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const s = Math.min(1, Math.max(0, strength / 100));
+
+  for (let i = 0; i < d.length; i += 4) {
+    const l = luminance(d, i);
+    const threshold = 120;
+    const amount = smoothstep(threshold - 30, threshold + 70, l) * s;
+    d[i] = mix(d[i], 255 - d[i], amount);
+    d[i + 1] = mix(d[i + 1], 255 - d[i + 1], amount * 0.9);
+    d[i + 2] = mix(d[i + 2], 255 - d[i + 2], amount * 0.75);
+  }
+
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+function applyInfrared(imageData, strength) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const s = Math.min(1, Math.max(0, strength / 100));
+
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    const foliage = Math.max(0, g - Math.max(r, b) * 0.72) / 255;
+    const l = (r * 0.35 + g * 0.55 + b * 0.1);
+    const ir = clamp(l + foliage * 135);
+    const ig = clamp(l + foliage * 95);
+    const ib = clamp(l * 0.82 - foliage * 35);
+
+    d[i] = mix(r, ir, s);
+    d[i + 1] = mix(g, ig, s);
+    d[i + 2] = mix(b, ib, s);
+  }
+
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
 function applyChannelShift(imageData, px) {
   if (px <= 0) return imageData;
   const w = imageData.width, h = imageData.height;
@@ -481,6 +612,49 @@ function applyPixelate(imageData, size) {
   return new ImageData(d, w, h);
 }
 
+function applyHalftone(imageData, strength, colorMode) {
+  const w = imageData.width, h = imageData.height;
+  const src = imageData.data;
+  const out = new Uint8ClampedArray(src);
+  const s = Math.min(1, Math.max(0, strength / 100));
+  const cell = Math.max(3, Math.round(Math.min(w, h) * (0.012 + s * 0.012)));
+  const monochrome = colorMode !== 'color';
+
+  for (let y = 0; y < h; y += cell) {
+    for (let x = 0; x < w; x += cell) {
+      let r = 0, g = 0, b = 0, count = 0;
+      for (let yy = y; yy < Math.min(h, y + cell); yy++) {
+        for (let xx = x; xx < Math.min(w, x + cell); xx++) {
+          const i = (yy * w + xx) * 4;
+          r += src[i]; g += src[i + 1]; b += src[i + 2]; count++;
+        }
+      }
+
+      r /= count; g /= count; b /= count;
+      const l = (r * 0.2126 + g * 0.7152 + b * 0.0722) / 255;
+      const radius = (cell * 0.52) * (1 - l);
+      const cx = x + cell / 2;
+      const cy = y + cell / 2;
+
+      for (let yy = y; yy < Math.min(h, y + cell); yy++) {
+        for (let xx = x; xx < Math.min(w, x + cell); xx++) {
+          const i = (yy * w + xx) * 4;
+          const dist = Math.hypot(xx - cx, yy - cy);
+          const ink = dist <= radius ? 1 : 0;
+          const target = monochrome
+            ? (ink ? [20, 20, 20] : [245, 242, 232])
+            : (ink ? [r * 0.42, g * 0.42, b * 0.42] : [r + 20, g + 20, b + 20]);
+          out[i] = clamp(mix(src[i], target[0], s));
+          out[i + 1] = clamp(mix(src[i + 1], target[1], s));
+          out[i + 2] = clamp(mix(src[i + 2], target[2], s));
+        }
+      }
+    }
+  }
+
+  return new ImageData(out, w, h);
+}
+
 function applyChromaticAberration(imageData, amount) {
   const w = imageData.width, h = imageData.height;
   const src = imageData.data;
@@ -522,6 +696,87 @@ function applyLensDistortion(imageData, strength) {
   return new ImageData(out, w, h);
 }
 
+function applyTiltShift(imageData, strength) {
+  const w = imageData.width, h = imageData.height;
+  const blurred = applyBlur(imageData, Math.max(3, strength / 8));
+  const src = imageData.data;
+  const bd = blurred.data;
+  const out = new Uint8ClampedArray(src.length);
+  const focusCenter = h * 0.5;
+  const focusHalf = h * (0.12 + (100 - Math.min(100, strength)) * 0.001);
+  const feather = h * 0.2;
+
+  for (let y = 0; y < h; y++) {
+    const dist = Math.max(0, Math.abs(y - focusCenter) - focusHalf);
+    const amount = smoothstep(0, feather, dist);
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      out[i] = mix(src[i], bd[i], amount);
+      out[i + 1] = mix(src[i + 1], bd[i + 1], amount);
+      out[i + 2] = mix(src[i + 2], bd[i + 2], amount);
+      out[i + 3] = src[i + 3];
+    }
+  }
+
+  return new ImageData(out, w, h);
+}
+
+function applyDoubleExposure(imageData, strength) {
+  const w = imageData.width, h = imageData.height;
+  const src = imageData.data;
+  const out = new Uint8ClampedArray(src);
+  const s = Math.min(0.75, Math.max(0.05, strength / 140));
+  const offsetX = Math.round(w * 0.08);
+  const offsetY = Math.round(h * -0.04);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const sx = Math.min(w - 1, Math.max(0, w - 1 - x + offsetX));
+      const sy = Math.min(h - 1, Math.max(0, y + offsetY));
+      const i = (y * w + x) * 4;
+      const si = (sy * w + sx) * 4;
+      const mask = smoothstep(20, 210, luminance(src, si));
+      const amount = s * mask;
+      out[i] = clamp(mix(out[i], Math.max(out[i], src[si]), amount));
+      out[i + 1] = clamp(mix(out[i + 1], Math.max(out[i + 1], src[si + 1]), amount));
+      out[i + 2] = clamp(mix(out[i + 2], Math.max(out[i + 2], src[si + 2]), amount));
+    }
+  }
+
+  return new ImageData(out, w, h);
+}
+
+function applyAnamorphicFlare(imageData, strength) {
+  const w = imageData.width, h = imageData.height;
+  const src = imageData.data;
+  const out = new Uint8ClampedArray(src);
+  const s = Math.min(1, Math.max(0, strength / 100));
+  const rows = [];
+
+  for (let y = 0; y < h; y++) {
+    let maxLum = 0;
+    for (let x = 0; x < w; x++) {
+      maxLum = Math.max(maxLum, luminance(src, (y * w + x) * 4));
+    }
+    if (maxLum > 185) rows.push({ y, weight: smoothstep(185, 255, maxLum) });
+  }
+
+  for (const row of rows) {
+    const radius = Math.max(1, Math.round(h * 0.012));
+    for (let yy = Math.max(0, row.y - radius); yy <= Math.min(h - 1, row.y + radius); yy++) {
+      const verticalFalloff = 1 - Math.abs(yy - row.y) / (radius + 1);
+      for (let x = 0; x < w; x++) {
+        const i = (yy * w + x) * 4;
+        const amount = row.weight * verticalFalloff * s * 0.55;
+        out[i] = clamp(out[i] + 70 * amount);
+        out[i + 1] = clamp(out[i + 1] + 115 * amount);
+        out[i + 2] = clamp(out[i + 2] + 255 * amount);
+      }
+    }
+  }
+
+  return new ImageData(out, w, h);
+}
 
 function applyDatamosh(imageData, strength) {
   const w = imageData.width, h = imageData.height;
@@ -546,6 +801,67 @@ function applyDatamosh(imageData, strength) {
     }
   }
   return new ImageData(d, w, h);
+}
+
+function applyPixelSort(imageData, mode, intensity = 1) {
+  const w = imageData.width, h = imageData.height;
+  const src = imageData.data;
+  const out = new Uint8ClampedArray(src);
+  const direction = mode === 'vertical' ? 'vertical' : 'horizontal';
+  const threshold = 255 * (0.66 - Math.min(1, intensity) * 0.24);
+  const minRun = Math.max(6, Math.round((direction === 'horizontal' ? w : h) * 0.035));
+
+  if (direction === 'horizontal') {
+    for (let y = 0; y < h; y++) {
+      sortLine(out, src, w, h, 0, y, 1, 0, w, threshold, minRun);
+    }
+  } else {
+    for (let x = 0; x < w; x++) {
+      sortLine(out, src, w, h, x, 0, 0, 1, h, threshold, minRun);
+    }
+  }
+
+  return new ImageData(out, w, h);
+}
+
+function sortLine(out, src, w, h, startX, startY, stepX, stepY, length, threshold, minRun) {
+  let run = [];
+  let positions = [];
+  const flush = () => {
+    if (run.length >= minRun) {
+      run.sort((a, b) => a.l - b.l);
+      for (let n = 0; n < run.length; n++) {
+        const target = positions[n];
+        const source = run[n].source;
+        out[target] = src[source];
+        out[target + 1] = src[source + 1];
+        out[target + 2] = src[source + 2];
+        out[target + 3] = src[source + 3];
+      }
+    }
+    run = [];
+    positions = [];
+  };
+
+  for (let n = 0; n < length; n++) {
+    const x = startX + stepX * n;
+    const y = startY + stepY * n;
+    if (x < 0 || x >= w || y < 0 || y >= h) {
+      flush();
+      continue;
+    }
+
+    const i = (y * w + x) * 4;
+    const l = luminance(src, i);
+    if (l >= threshold) {
+      positions.push(i);
+      run.push({ source: i, l });
+    } else {
+      flush();
+    }
+  }
+
+  flush();
 }
 
 function applyDust(imageData, amount) {

@@ -166,6 +166,45 @@ function renderCanvas(imageData) {
   ctx.putImageData(imageData, 0, 0);
 }
 
+function cloneImageData(imageData) {
+  return new ImageData(new Uint8ClampedArray(imageData.data), imageData.width, imageData.height);
+}
+
+function mergePresetEffects(baseFx, preset, intensity = 100) {
+  const fx = { ...baseFx };
+  if (!preset) return fx;
+
+  const amount = intensity / 100;
+  for (const [key, value] of Object.entries(preset.fx)) {
+    if (typeof value === 'number') {
+      fx[key] = (typeof fx[key] === 'number' ? fx[key] : 0) + value * amount;
+    } else if (amount > 0) {
+      fx[key] = value;
+    }
+  }
+
+  return fx;
+}
+
+async function renderEffectsToImageData(sourceData, fx, canvas = createWorkCanvas(sourceData.width, sourceData.height), context = null) {
+  let data = cloneImageData(sourceData);
+  if (fx.sharpness > 0) data = applySharpen(data, fx.sharpness);
+  if (fx.sharpness < 0 || fx.blur > 0) data = applyBlur(data, Math.abs(fx.sharpness || 0) / 5 + (fx.blur || 0) / 3);
+  data = applyEffects(data, fx, 100);
+
+  if (canvas.width !== data.width) canvas.width = data.width;
+  if (canvas.height !== data.height) canvas.height = data.height;
+  const canvasContext = context || canvas.getContext('2d');
+
+  if (fx.jpegQ) {
+    canvasContext.putImageData(data, 0, 0);
+    data = await applyJPEGCompression(canvas, fx.jpegQ, fx.jpegPasses || 1);
+  }
+
+  canvasContext.putImageData(data, 0, 0);
+  return data;
+}
+
 let applyTimeout = null;
 function scheduleApply() {
   clearTimeout(applyTimeout);
@@ -176,21 +215,9 @@ async function applyAll() {
   const state = getState();
   if (!state.imageLoaded || !state.history[0]) return;
   const original = state.history[0];
-  let data = new ImageData(new Uint8ClampedArray(original.data), original.width, original.height);
   const preset = state.activePreset ? PRESETS.find(p => p.id === state.activePreset) : null;
-  const fx = { ...state.adjustments };
-  if (preset) {
-    for (const [k, v] of Object.entries(preset.fx)) {
-      fx[k] = (fx[k] || 0) + v * (state.presetIntensity / 100);
-    }
-  }
-  if (fx.sharpness > 0) data = applySharpen(data, fx.sharpness);
-  if (fx.sharpness < 0 || fx.blur > 0) data = applyBlur(data, Math.abs(fx.sharpness || 0) / 5 + (fx.blur || 0) / 3);
-  data = applyEffects(data, fx, 100);
-  if (fx.jpegQ) {
-    ctx.putImageData(data, 0, 0);
-    data = await applyJPEGCompression(mainCanvas, fx.jpegQ, fx.jpegPasses || 1);
-  }
+  const fx = mergePresetEffects(state.adjustments, preset, state.presetIntensity);
+  const data = await renderEffectsToImageData(original, fx, mainCanvas, ctx);
   setState({ currentImageData: data });
   renderCanvas(data);
 }
@@ -270,9 +297,8 @@ function generateThumbnails(list) {
     if (!card) return;
     try {
       const smallData = downscaleImageData(original, tw, th);
-      const result = applyEffects(smallData, preset.fx, 100);
       const oc = createWorkCanvas(tw, th);
-      oc.getContext('2d').putImageData(result, 0, 0);
+      await renderEffectsToImageData(smallData, preset.fx, oc);
       const blob = await canvasToBlob(oc, 'image/jpeg', 0.7);
       const url = URL.createObjectURL(blob);
       if (card.dataset.thumbUrl) URL.revokeObjectURL(card.dataset.thumbUrl);
@@ -843,11 +869,9 @@ async function showSaveModal() {
   let data = eCtx.getImageData(0, 0, w, h);
   
   const preset = state.activePreset ? PRESETS.find(p => p.id === state.activePreset) : null;
-  const fx = { ...state.adjustments };
-  if (preset) { for (const [k,v] of Object.entries(preset.fx)) fx[k] = (fx[k]||0) + v*(state.presetIntensity/100); }
+  const fx = mergePresetEffects(state.adjustments, preset, state.presetIntensity);
   
-  data = applyEffects(data, fx, 100);
-  eCtx.putImageData(data, 0, 0);
+  data = await renderEffectsToImageData(data, fx, exportOc, eCtx);
 
   let outputBlob;
   const requestedType = `image/${format}`;
