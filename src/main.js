@@ -38,6 +38,21 @@ const APP_CATEGORIES = [
   { id: 'favorites', label: 'Favorites', icon: '⭐' },
   { id: 'custom', label: 'Mine', icon: '💽' },
 ];
+const HSL_COLORS = ['red', 'orange', 'yellow', 'green', 'aqua', 'blue', 'purple', 'magenta'];
+const PRO_TONE_CONTROLS = [
+  { key: 'blackPoint', label: 'Black Point', min: 0, max: 35, value: 0 },
+  { key: 'whitePoint', label: 'White Point', min: 65, max: 120, value: 100 },
+  { key: 'gamma', label: 'Gamma', min: -100, max: 100, value: 0 },
+  { key: 'clarity', label: 'Clarity', min: -100, max: 100, value: 0 },
+  { key: 'dehaze', label: 'Dehaze', min: -100, max: 100, value: 0 },
+];
+const SPLIT_TONE_CONTROLS = [
+  { key: 'shadowHue', label: 'Shadow Hue', min: 0, max: 360, value: 220 },
+  { key: 'shadowSat', label: 'Shadow Sat', min: 0, max: 100, value: 0 },
+  { key: 'highlightHue', label: 'Highlight Hue', min: 0, max: 360, value: 42 },
+  { key: 'highlightSat', label: 'Highlight Sat', min: 0, max: 100, value: 0 },
+  { key: 'balance', label: 'Balance', min: -100, max: 100, value: 0 },
+];
 let stockImage = null;
 
 window.addEventListener('DOMContentLoaded', () => {
@@ -52,6 +67,7 @@ window.addEventListener('DOMContentLoaded', () => {
   buildCategories();
   buildPresetGrid();
   buildAdjustPanel();
+  buildProPanel();
   buildToolsPanel();
   renderGallery();
   bindEvents();
@@ -270,6 +286,7 @@ function initCanvas(img) {
 function renderCanvas(imageData) {
   if (!imageData) return;
   ctx.putImageData(imageData, 0, 0);
+  updateHistogram(imageData);
 }
 
 function cloneImageData(imageData) {
@@ -728,6 +745,251 @@ function buildAdjustPanel() {
     adjustSliders.querySelector(`[data-adj="${key}"]`).value = 0;
     setState({ adjustments: { ...getState().adjustments, [key]: 0 } });
     $(`adj-val-${key}`).textContent = 0;
+  });
+}
+
+function buildProPanel() {
+  const workspace = $('pro-workspace');
+  if (!workspace) return;
+
+  workspace.innerHTML = `
+    <section class="pro-card">
+      <div class="pro-card-header">
+        <div>
+          <h4>Histogram</h4>
+          <p>RGB tonal distribution</p>
+        </div>
+        <button id="btn-auto-enhance" class="btn btn-secondary">Auto</button>
+      </div>
+      <canvas id="histogram-canvas" width="320" height="96"></canvas>
+      <button id="btn-reset-pro" class="btn btn-secondary btn-full">Reset Pro Adjustments</button>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header"><h4>Levels & Presence</h4></div>
+      <div class="pro-slider-list">
+        ${PRO_TONE_CONTROLS.map(control => renderProSlider(control, 'tone')).join('')}
+      </div>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header">
+        <div>
+          <h4>HSL Color Mixer</h4>
+          <p>Target individual color families</p>
+        </div>
+      </div>
+      <div class="hsl-mixer">
+        ${HSL_COLORS.map(color => renderHslGroup(color)).join('')}
+      </div>
+    </section>
+    <section class="pro-card">
+      <div class="pro-card-header"><h4>Split Toning</h4></div>
+      <div class="pro-slider-list">
+        ${SPLIT_TONE_CONTROLS.map(control => renderProSlider(control, 'split')).join('')}
+      </div>
+    </section>
+  `;
+
+  workspace.addEventListener('input', handleProInput);
+  $('btn-auto-enhance')?.addEventListener('click', autoEnhance);
+  $('btn-reset-pro')?.addEventListener('click', resetProAdjustments);
+  updateHistogram(getState().currentImageData);
+}
+
+function renderProSlider(control, group) {
+  return `
+    <label class="pro-slider">
+      <span>${control.label}<strong id="pro-val-${group}-${control.key}">${control.value}</strong></span>
+      <input type="range" min="${control.min}" max="${control.max}" value="${control.value}" data-pro-group="${group}" data-pro-key="${control.key}" />
+    </label>
+  `;
+}
+
+function renderHslGroup(color) {
+  return `
+    <div class="hsl-row" data-hsl-row="${color}">
+      <div class="hsl-color-label"><span class="hsl-dot hsl-dot-${color}"></span>${color}</div>
+      ${['h', 's', 'l'].map(channel => `
+        <label>
+          <span>${channel.toUpperCase()} <strong id="hsl-val-${color}-${channel}">0</strong></span>
+          <input type="range" min="${channel === 'h' ? -60 : -100}" max="${channel === 'h' ? 60 : 100}" value="0" data-hsl-color="${color}" data-hsl-channel="${channel}" />
+        </label>
+      `).join('')}
+    </div>
+  `;
+}
+
+function handleProInput(e) {
+  const target = e.target;
+  if (target.matches('[data-pro-group="tone"]')) {
+    const key = target.dataset.proKey;
+    const value = parseInt(target.value, 10);
+    setState({ adjustments: { ...getState().adjustments, [key]: value } });
+    $(`pro-val-tone-${key}`).textContent = value;
+    scheduleApply();
+  } else if (target.matches('[data-pro-group="split"]')) {
+    const key = target.dataset.proKey;
+    const value = parseInt(target.value, 10);
+    const splitTone = { ...(getState().adjustments.splitTone || {}), [key]: value };
+    setState({ adjustments: { ...getState().adjustments, splitTone } });
+    $(`pro-val-split-${key}`).textContent = value;
+    scheduleApply();
+  } else if (target.matches('[data-hsl-color]')) {
+    const color = target.dataset.hslColor;
+    const channel = target.dataset.hslChannel;
+    const value = parseInt(target.value, 10);
+    const currentHsl = getState().adjustments.hsl || {};
+    const hsl = {
+      ...currentHsl,
+      [color]: {
+        ...(currentHsl[color] || {}),
+        [channel]: value,
+      },
+    };
+    setState({ adjustments: { ...getState().adjustments, hsl } });
+    $(`hsl-val-${color}-${channel}`).textContent = value;
+    scheduleApply();
+  }
+}
+
+function autoEnhance() {
+  const source = getState().currentImageData || getState().history[0];
+  if (!source) { showToast('Load a photo first'); return; }
+  const stats = analyzeImage(source);
+  const blackPoint = Math.min(18, Math.max(0, Math.round(stats.p02 / 255 * 100) - 1));
+  const whitePoint = Math.max(72, Math.min(115, Math.round(stats.p98 / 255 * 100) + 4));
+  const exposure = Math.round((128 - stats.mean) / 5);
+  const shadows = stats.mean < 105 ? 18 : 6;
+  const highlights = stats.p98 > 238 ? -18 : -6;
+  const contrast = stats.spread < 110 ? 12 : 4;
+  const vibrance = stats.saturation < 0.18 ? 18 : 8;
+  const clarity = stats.spread < 125 ? 12 : 6;
+  const dehaze = stats.p02 > 35 ? 8 : 3;
+  const gamma = Math.round((118 - stats.median) / 3);
+
+  const adjustments = {
+    ...getState().adjustments,
+    blackPoint,
+    whitePoint,
+    gamma,
+    exposure,
+    shadows,
+    highlights,
+    contrast,
+    vibrance,
+    clarity,
+    dehaze,
+  };
+  setState({ adjustments });
+  syncAdjustmentControls();
+  scheduleApply();
+  showToast('Auto enhance applied');
+}
+
+function analyzeImage(imageData) {
+  const hist = new Uint32Array(256);
+  const d = imageData.data;
+  let total = 0;
+  let saturation = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = Math.round(d[i] * 0.2126 + d[i + 1] * 0.7152 + d[i + 2] * 0.0722);
+    hist[lum]++;
+    total += lum;
+    const max = Math.max(d[i], d[i + 1], d[i + 2]);
+    const min = Math.min(d[i], d[i + 1], d[i + 2]);
+    saturation += max ? (max - min) / max : 0;
+  }
+  const pixels = d.length / 4;
+  const percentile = pct => {
+    const target = pixels * pct;
+    let sum = 0;
+    for (let i = 0; i < hist.length; i++) {
+      sum += hist[i];
+      if (sum >= target) return i;
+    }
+    return 255;
+  };
+  const p02 = percentile(0.02);
+  const p50 = percentile(0.5);
+  const p98 = percentile(0.98);
+  return {
+    p02,
+    p98,
+    median: p50,
+    mean: total / pixels,
+    spread: p98 - p02,
+    saturation: saturation / pixels,
+  };
+}
+
+function resetProAdjustments() {
+  const adjustments = { ...getState().adjustments };
+  for (const control of PRO_TONE_CONTROLS) adjustments[control.key] = control.value;
+  delete adjustments.hsl;
+  delete adjustments.splitTone;
+  setState({ adjustments });
+  syncAdjustmentControls();
+  scheduleApply();
+  showToast('Pro adjustments reset');
+}
+
+function syncAdjustmentControls() {
+  const adjustments = getState().adjustments;
+  document.querySelectorAll('[data-adj]').forEach(input => {
+    const key = input.dataset.adj;
+    const value = adjustments[key] ?? 0;
+    input.value = value;
+    $(`adj-val-${key}`).textContent = value;
+  });
+  for (const control of PRO_TONE_CONTROLS) {
+    const value = adjustments[control.key] ?? control.value;
+    const input = document.querySelector(`[data-pro-group="tone"][data-pro-key="${control.key}"]`);
+    if (input) input.value = value;
+    const label = $(`pro-val-tone-${control.key}`);
+    if (label) label.textContent = value;
+  }
+  for (const control of SPLIT_TONE_CONTROLS) {
+    const value = adjustments.splitTone?.[control.key] ?? control.value;
+    const input = document.querySelector(`[data-pro-group="split"][data-pro-key="${control.key}"]`);
+    if (input) input.value = value;
+    const label = $(`pro-val-split-${control.key}`);
+    if (label) label.textContent = value;
+  }
+  for (const color of HSL_COLORS) {
+    for (const channel of ['h', 's', 'l']) {
+      const value = adjustments.hsl?.[color]?.[channel] ?? 0;
+      const input = document.querySelector(`[data-hsl-color="${color}"][data-hsl-channel="${channel}"]`);
+      if (input) input.value = value;
+      const label = $(`hsl-val-${color}-${channel}`);
+      if (label) label.textContent = value;
+    }
+  }
+}
+
+function updateHistogram(imageData) {
+  const canvas = $('histogram-canvas');
+  if (!canvas) return;
+  const context = canvas.getContext('2d');
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.fillStyle = '#07070b';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  if (!imageData) return;
+
+  const channels = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)];
+  const d = imageData.data;
+  for (let i = 0; i < d.length; i += 4) {
+    channels[0][d[i]]++;
+    channels[1][d[i + 1]]++;
+    channels[2][d[i + 2]]++;
+  }
+  const max = Math.max(...channels.flatMap(channel => Array.from(channel)));
+  const colors = ['rgba(255,70,82,0.65)', 'rgba(46,213,115,0.55)', 'rgba(84,160,255,0.65)'];
+  channels.forEach((hist, channelIndex) => {
+    context.fillStyle = colors[channelIndex];
+    for (let i = 0; i < hist.length; i++) {
+      const x = i / 255 * canvas.width;
+      const barHeight = Math.sqrt(hist[i] / max) * canvas.height;
+      context.fillRect(x, canvas.height - barHeight, Math.max(1, canvas.width / 256), barHeight);
+    }
   });
 }
 

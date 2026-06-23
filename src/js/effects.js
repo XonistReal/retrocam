@@ -48,6 +48,53 @@ function parseHexColor(hex) {
   ];
 }
 
+function hueWeight(hue, center, width) {
+  const dist = Math.abs(((hue - center + 540) % 360) - 180);
+  return Math.max(0, 1 - dist / width);
+}
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, s = 0;
+  const l = (max + min) / 2;
+
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+  }
+
+  return [h, s, l];
+}
+
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360 / 360;
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return [v, v, v];
+  }
+
+  const hue2rgb = (p, q, t) => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  return [
+    Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+    Math.round(hue2rgb(p, q, h) * 255),
+    Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+  ];
+}
+
 function canvasToBlob(canvas, type, quality) {
   if (typeof canvas.convertToBlob === 'function') {
     return canvas.convertToBlob({ type, quality });
@@ -97,6 +144,8 @@ export function applyEffects(imageData, fx, intensity = 100) {
   const w = imageData.width, h = imageData.height;
   const data = new Uint8ClampedArray(imageData.data);
 
+  // Levels and gamma are applied before tone/color work, like a base correction layer.
+  if (fx.blackPoint || fx.whitePoint || fx.gamma) applyLevels(data, fx.blackPoint || 0, fx.whitePoint ?? 100, fx.gamma || 0);
   // Brightness
   if (fx.brightness) applyBrightness(data, fx.brightness * factor);
   // Contrast
@@ -125,6 +174,12 @@ export function applyEffects(imageData, fx, intensity = 100) {
 
   let result = new ImageData(data, w, h);
 
+  // Local-contrast tools
+  if (fx.clarity) result = applyClarity(result, fx.clarity * factor);
+  if (fx.dehaze) result = applyDehaze(result, fx.dehaze * factor);
+  // Targeted color work
+  if (fx.hsl) result = applyHslMixer(result, fx.hsl, factor);
+  if (fx.splitTone) result = applySplitTone(result, fx.splitTone, factor);
   // Print / specialty color processes
   if (fx.duotone) result = applyDuotone(result, fx.duotone, factor);
   if (fx.solarize) result = applySolarize(result, fx.solarize * factor);
@@ -265,6 +320,20 @@ function applyBrightness(data, val) {
   }
 }
 
+function applyLevels(data, blackPoint, whitePoint, gammaValue) {
+  const black = Math.min(0.95, Math.max(0, blackPoint / 100));
+  const white = Math.max(black + 0.02, Math.min(1.5, whitePoint / 100));
+  const gamma = Math.pow(2, -gammaValue / 100);
+
+  for (let i = 0; i < data.length; i += 4) {
+    for (let c = 0; c < 3; c++) {
+      let v = (data[i + c] / 255 - black) / (white - black);
+      v = Math.min(1, Math.max(0, v));
+      data[i + c] = 255 * Math.pow(v, gamma);
+    }
+  }
+}
+
 function applyContrast(data, val) {
   const f = (259 * (val * 2.55 + 255)) / (255 * (259 - val * 2.55));
   for (let i = 0; i < data.length; i += 4) {
@@ -369,6 +438,53 @@ function applyThermal(data) {
   }
 }
 
+function applyClarity(imageData, amount) {
+  if (!amount) return imageData;
+  const w = imageData.width, h = imageData.height;
+  const blurred = applyBlur(imageData, Math.max(2, Math.min(12, Math.abs(amount) / 6)));
+  const src = imageData.data;
+  const bd = blurred.data;
+  const out = new Uint8ClampedArray(src);
+  const strength = amount / 100;
+
+  for (let i = 0; i < src.length; i += 4) {
+    const lum = luminance(src, i);
+    const midtoneMask = 1 - Math.abs(lum - 128) / 128;
+    for (let c = 0; c < 3; c++) {
+      const detail = src[i + c] - bd[i + c];
+      out[i + c] = clamp(src[i + c] + detail * strength * 1.45 * midtoneMask);
+    }
+  }
+
+  return new ImageData(out, w, h);
+}
+
+function applyDehaze(imageData, amount) {
+  if (!amount) return imageData;
+  const d = new Uint8ClampedArray(imageData.data);
+  const strength = amount / 100;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const lum = luminance(d, i);
+    const hazeMask = smoothstep(70, 230, lum);
+    const contrast = 1 + Math.abs(strength) * 0.35;
+    const direction = Math.sign(strength);
+
+    d[i] = clamp((d[i] - 128) * contrast + 128 - direction * hazeMask * 12);
+    d[i + 1] = clamp((d[i + 1] - 128) * contrast + 128 - direction * hazeMask * 9);
+    d[i + 2] = clamp((d[i + 2] - 128) * contrast + 128 - direction * hazeMask * 4);
+
+    if (strength > 0) {
+      const gray = luminance(d, i);
+      d[i] = clamp(gray + (d[i] - gray) * (1 + strength * 0.12));
+      d[i + 1] = clamp(gray + (d[i + 1] - gray) * (1 + strength * 0.12));
+      d[i + 2] = clamp(gray + (d[i + 2] - gray) * (1 + strength * 0.12));
+    }
+  }
+
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
 function applyFlash(data, w, h, strength) {
   const s = strength / 100;
   const cx = w / 2;
@@ -407,6 +523,66 @@ function applyDuotone(imageData, palette, intensity = 1) {
     d[i] = mix(d[i], mix(shadow[0], highlight[0], curve), s);
     d[i + 1] = mix(d[i + 1], mix(shadow[1], highlight[1], curve), s);
     d[i + 2] = mix(d[i + 2], mix(shadow[2], highlight[2], curve), s);
+  }
+
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+function applyHslMixer(imageData, mixer, intensity = 1) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const colors = {
+    red: { center: 0, width: 36 },
+    orange: { center: 32, width: 34 },
+    yellow: { center: 58, width: 34 },
+    green: { center: 120, width: 55 },
+    aqua: { center: 180, width: 42 },
+    blue: { center: 225, width: 48 },
+    purple: { center: 278, width: 44 },
+    magenta: { center: 318, width: 42 },
+  };
+
+  for (let i = 0; i < d.length; i += 4) {
+    let [h, s, l] = rgbToHsl(d[i], d[i + 1], d[i + 2]);
+    let hueShift = 0;
+    let satShift = 0;
+    let lumShift = 0;
+
+    for (const [name, range] of Object.entries(colors)) {
+      const settings = mixer[name];
+      if (!settings) continue;
+      const weight = hueWeight(h, range.center, range.width);
+      if (!weight) continue;
+      hueShift += (settings.h || 0) * weight * intensity;
+      satShift += (settings.s || 0) * weight * intensity;
+      lumShift += (settings.l || 0) * weight * intensity;
+    }
+
+    h = (h + hueShift + 360) % 360;
+    s = Math.min(1, Math.max(0, s * (1 + satShift / 100)));
+    l = Math.min(1, Math.max(0, l + lumShift / 120));
+    const [r, g, b] = hslToRgb(h, s, l);
+    d[i] = r; d[i + 1] = g; d[i + 2] = b;
+  }
+
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+function applySplitTone(imageData, splitTone, intensity = 1) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const shadowSat = (splitTone.shadowSat || 0) / 100 * intensity;
+  const highlightSat = (splitTone.highlightSat || 0) / 100 * intensity;
+  const balance = (splitTone.balance || 0) / 100;
+  const shadowColor = hslToRgb(splitTone.shadowHue || 220, 1, 0.5);
+  const highlightColor = hslToRgb(splitTone.highlightHue || 42, 1, 0.5);
+
+  for (let i = 0; i < d.length; i += 4) {
+    const l = luminance(d, i) / 255;
+    const shadowMask = smoothstep(0.75 + balance * 0.2, 0.05, l) * shadowSat;
+    const highlightMask = smoothstep(0.35 + balance * 0.2, 1, l) * highlightSat;
+
+    d[i] = clamp(d[i] + shadowColor[0] * shadowMask * 0.22 + highlightColor[0] * highlightMask * 0.22);
+    d[i + 1] = clamp(d[i + 1] + shadowColor[1] * shadowMask * 0.22 + highlightColor[1] * highlightMask * 0.22);
+    d[i + 2] = clamp(d[i + 2] + shadowColor[2] * shadowMask * 0.22 + highlightColor[2] * highlightMask * 0.22);
   }
 
   return new ImageData(d, imageData.width, imageData.height);
