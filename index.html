@@ -6,12 +6,17 @@
   <meta name="theme-color" content="#0a0a0f" />
   <meta name="description" content="RetroLens — Emulate 90s & 2000s cameras, disposable film, compression artifacts, and more. 200+ presets with a full photo editor." />
   <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="RetroLens" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="format-detection" content="telephone=no" />
+  <meta name="color-scheme" content="dark" />
   <title>RetroLens — Retro Camera Emulator</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=VT323&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+  <link rel="apple-touch-icon" href="/icon.svg" />
   <link rel="manifest" href="/manifest.json" />
 </head>
 <body>
@@ -229,9 +234,6 @@
       </div>
     </div>
 
-      </div>
-    </div>
-
     <!-- About / Menu Modal -->
     <div id="menu-modal" class="modal hidden">
       <div class="modal-backdrop"></div>
@@ -278,8 +280,9 @@
           </button>
         </div>
         <div class="modal-body" style="padding: 0 20px 20px;">
-          <p style="font-size: 14px; color: var(--text-secondary); margin-bottom: 15px;">Long press the image below to save it to your photos.</p>
+          <p id="save-instructions" style="font-size: 14px; color: var(--text-secondary); margin-bottom: 15px;">Long press the image below to save it to your photos.</p>
           <img id="save-preview" style="width: 100%; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);" />
+          <button id="btn-share-save" class="btn btn-primary btn-full" style="margin-top: 20px; display: none;">Share / Save</button>
           <button class="btn btn-primary btn-full" style="margin-top: 20px;" onclick="document.getElementById('save-modal').classList.add('hidden')">Done</button>
         </div>
       </div>
@@ -287,6 +290,7 @@
 
     <!-- Hidden file input -->
     <input type="file" id="file-input" accept="image/*" class="hidden" />
+    <input type="file" id="camera-file-input" accept="image/*" capture="environment" class="hidden" />
   </div>
 
   <script type="module" src="/src/main.js"></script>

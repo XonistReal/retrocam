@@ -11,6 +11,7 @@ const canvasContainer = $('canvas-container');
 const mainCanvas = $('main-canvas');
 const ctx = mainCanvas.getContext('2d', { willReadFrequently: true });
 const fileInput = $('file-input');
+const cameraFileInput = $('camera-file-input');
 const categoryPills = $('category-pills');
 const presetGrid = $('preset-grid');
 const intensityBar = $('intensity-bar');
@@ -21,9 +22,13 @@ const toolsGrid = $('tools-grid');
 const sidePanel = $('side-panel');
 
 const STOCK_IMAGE_URL = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=256&h=256&auto=format&fit=crop';
+const MOBILE_DEVICE_RE = /Android|iPhone|iPad|iPod/i;
+const isMobileDevice = () => MOBILE_DEVICE_RE.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
 let stockImage = null;
 
 window.addEventListener('DOMContentLoaded', () => {
+  syncViewportMetrics();
+  registerServiceWorker();
   setTimeout(() => {
     splash.classList.add('fade-out');
     shell.classList.remove('hidden');
@@ -36,6 +41,85 @@ window.addEventListener('DOMContentLoaded', () => {
   bindEvents();
   loadStockImage();
 });
+
+window.addEventListener('resize', syncViewportMetrics);
+window.addEventListener('orientationchange', syncViewportMetrics);
+window.visualViewport?.addEventListener('resize', syncViewportMetrics);
+
+function syncViewportMetrics() {
+  const height = window.visualViewport?.height || window.innerHeight;
+  document.documentElement.style.setProperty('--app-height', `${Math.round(height)}px`);
+}
+
+function createWorkCanvas(width, height) {
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+
+  if (typeof OffscreenCanvas === 'function') {
+    return new OffscreenCanvas(w, h);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  return canvas;
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [header, data] = dataUrl.split(',');
+  const mime = header.match(/:(.*?);/)?.[1] || 'image/png';
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return new Blob([bytes], { type: mime });
+}
+
+function canvasToBlob(canvas, type = 'image/png', quality) {
+  if (typeof canvas.convertToBlob === 'function') {
+    return canvas.convertToBlob({ type, quality });
+  }
+
+  if (typeof canvas.toBlob === 'function') {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('Canvas export failed'));
+      }, type, quality);
+    });
+  }
+
+  return Promise.resolve(dataUrlToBlob(canvas.toDataURL(type, quality)));
+}
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function canvasToDataUrl(canvas, type, quality) {
+  if (typeof canvas.toDataURL === 'function') {
+    return canvas.toDataURL(type, quality);
+  }
+
+  return blobToDataUrl(await canvasToBlob(canvas, type, quality));
+}
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator) || !window.isSecureContext) return;
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(err => {
+      console.warn('Service worker registration failed', err);
+    });
+  });
+}
 
 async function loadStockImage() {
   const img = new Image();
@@ -154,6 +238,7 @@ function buildCategories() {
 function buildPresetGrid() { renderPresets(PRESETS); }
 
 function renderPresets(list) {
+  presetGrid.querySelectorAll('[data-thumb-url]').forEach(card => URL.revokeObjectURL(card.dataset.thumbUrl));
   presetGrid.innerHTML = list.map(p => {
     const cat = CATEGORIES.find(c => c.id === p.cat);
     return `<div class="preset-card" data-id="${p.id}" title="${p.name}">
@@ -180,29 +265,31 @@ function generateThumbnails(list) {
     tw = thumbSize; th = thumbSize;
   }
 
-  list.forEach(preset => {
+  list.forEach(async preset => {
     const card = presetGrid.querySelector(`[data-id="${preset.id}"]`);
     if (!card) return;
     try {
       const smallData = downscaleImageData(original, tw, th);
       const result = applyEffects(smallData, preset.fx, 100);
-      const oc = new OffscreenCanvas(tw, th);
+      const oc = createWorkCanvas(tw, th);
       oc.getContext('2d').putImageData(result, 0, 0);
-      oc.convertToBlob({ type: 'image/jpeg', quality: 0.7 }).then(blob => {
-        card.style.backgroundImage = `url(${URL.createObjectURL(blob)})`;
-        card.style.backgroundSize = 'cover';
-        card.style.backgroundPosition = 'center';
-      });
+      const blob = await canvasToBlob(oc, 'image/jpeg', 0.7);
+      const url = URL.createObjectURL(blob);
+      if (card.dataset.thumbUrl) URL.revokeObjectURL(card.dataset.thumbUrl);
+      card.dataset.thumbUrl = url;
+      card.style.backgroundImage = `url(${url})`;
+      card.style.backgroundSize = 'cover';
+      card.style.backgroundPosition = 'center';
     } catch(e) { console.warn('Thumbnail err', e); }
   });
 }
 
 function downscaleImageData(source, tw, th) {
-  const oc = new OffscreenCanvas(tw, th);
+  const oc = createWorkCanvas(tw, th);
   const ctx = oc.getContext('2d');
   
   if (source instanceof ImageData) {
-    const tempOc = new OffscreenCanvas(source.width, source.height);
+    const tempOc = createWorkCanvas(source.width, source.height);
     tempOc.getContext('2d').putImageData(source, 0, 0);
     ctx.drawImage(tempOc, 0, 0, tw, th);
   } else {
@@ -313,14 +400,14 @@ function performPixelCrush(val, source) {
   const nh = Math.max(10, Math.round(h * factor));
   
   // Step 1: Downscale to tiny resolution
-  const smallOc = new OffscreenCanvas(nw, nh);
+  const smallOc = createWorkCanvas(nw, nh);
   const smallCtx = smallOc.getContext('2d');
-  const src = new OffscreenCanvas(w, h);
+  const src = createWorkCanvas(w, h);
   src.getContext('2d').putImageData(source, 0, 0);
   smallCtx.drawImage(src, 0, 0, nw, nh);
   
   // Step 2: Upscale back to original resolution with nearest-neighbor
-  const bigOc = new OffscreenCanvas(w, h);
+  const bigOc = createWorkCanvas(w, h);
   const bigCtx = bigOc.getContext('2d');
   bigCtx.imageSmoothingEnabled = false;
   bigCtx.msImageSmoothingEnabled = false;
@@ -367,9 +454,9 @@ function handleTool(tool) {
   if (tool === 'crop') {
     startCrop();
   } else if (tool === 'rotate-cw' || tool === 'rotate-ccw') {
-    const oc = new OffscreenCanvas(h, w);
+    const oc = createWorkCanvas(h, w);
     const octx = oc.getContext('2d');
-    const src = new OffscreenCanvas(w, h);
+    const src = createWorkCanvas(w, h);
     src.getContext('2d').putImageData(data, 0, 0);
     octx.translate(tool === 'rotate-cw' ? h : 0, tool === 'rotate-cw' ? 0 : w);
     octx.rotate(tool === 'rotate-cw' ? Math.PI / 2 : -Math.PI / 2);
@@ -381,9 +468,9 @@ function handleTool(tool) {
     setState({ history: newHist });
     pushHistory(nd); renderCanvas(nd);
   } else if (tool === 'flip-h' || tool === 'flip-v') {
-    const oc = new OffscreenCanvas(w, h);
+    const oc = createWorkCanvas(w, h);
     const octx = oc.getContext('2d');
-    const src = new OffscreenCanvas(w, h);
+    const src = createWorkCanvas(w, h);
     src.getContext('2d').putImageData(data, 0, 0);
     if (tool === 'flip-h') { octx.translate(w, 0); octx.scale(-1, 1); }
     else { octx.translate(0, h); octx.scale(1, -1); }
@@ -394,7 +481,7 @@ function handleTool(tool) {
     setState({ history: newHist_ });
     pushHistory(nd); renderCanvas(nd);
   } else if (tool === 'timestamp') {
-    const oc = new OffscreenCanvas(w, h);
+    const oc = createWorkCanvas(w, h);
     const octx = oc.getContext('2d');
     octx.putImageData(data, 0, 0);
     const fs = Math.max(14, Math.floor(w / 20));
@@ -421,7 +508,7 @@ function startCrop() {
   
   const overlay = document.createElement('div');
   overlay.id = 'crop-overlay';
-  overlay.style.cssText = 'position:absolute; inset:0; border:2px dashed var(--accent); background:rgba(0,0,0,0.3); z-index:20; cursor:crosshair;';
+  overlay.style.cssText = 'position:absolute; inset:0; border:2px dashed var(--accent); background:rgba(0,0,0,0.3); z-index:20; cursor:crosshair; touch-action:none;';
   canvasContainer.appendChild(overlay);
 
   let startX, startY, currentX, currentY;
@@ -429,18 +516,29 @@ function startCrop() {
   box.style.cssText = 'position:absolute; border:2px solid var(--accent); background:rgba(255,149,0,0.1); display:none;';
   overlay.appendChild(box);
 
+  const getPoint = e => {
+    const point = e.touches?.[0] || e.changedTouches?.[0] || e;
+    return { x: point.clientX, y: point.clientY };
+  };
+
   const onDown = e => {
+    e.preventDefault();
     const rect = overlay.getBoundingClientRect();
-    startX = (e.clientX || e.touches[0].clientX) - rect.left;
-    startY = (e.clientY || e.touches[0].clientY) - rect.top;
+    const point = getPoint(e);
+    startX = point.x - rect.left;
+    startY = point.y - rect.top;
+    currentX = startX;
+    currentY = startY;
     box.style.display = 'block';
   };
 
   const onMove = e => {
     if (startX === undefined) return;
+    e.preventDefault();
     const rect = overlay.getBoundingClientRect();
-    currentX = (e.clientX || e.touches[0].clientX) - rect.left;
-    currentY = (e.clientY || e.touches[0].clientY) - rect.top;
+    const point = getPoint(e);
+    currentX = point.x - rect.left;
+    currentY = point.y - rect.top;
     
     const x = Math.min(startX, currentX);
     const y = Math.min(startY, currentY);
@@ -454,18 +552,19 @@ function startCrop() {
   };
 
   const onUp = () => {
-    if (startX === undefined || currentX === undefined) return;
-    const rect = overlay.getBoundingClientRect();
-    const scaleX = mainCanvas.width / rect.width;
-    const scaleY = mainCanvas.height / rect.height;
-    
-    const x = Math.min(startX, currentX) * scaleX;
-    const y = Math.min(startY, currentY) * scaleY;
-    const width = Math.abs(startX - currentX) * scaleX;
-    const height = Math.abs(startY - currentY) * scaleY;
-    
-    if (width > 10 && height > 10) {
-      performCrop(x, y, width, height);
+    if (startX !== undefined && currentX !== undefined) {
+      const rect = overlay.getBoundingClientRect();
+      const scaleX = mainCanvas.width / rect.width;
+      const scaleY = mainCanvas.height / rect.height;
+      
+      const x = Math.min(startX, currentX) * scaleX;
+      const y = Math.min(startY, currentY) * scaleY;
+      const width = Math.abs(startX - currentX) * scaleX;
+      const height = Math.abs(startY - currentY) * scaleY;
+      
+      if (width > 10 && height > 10) {
+        performCrop(x, y, width, height);
+      }
     }
     
     overlay.remove();
@@ -475,13 +574,18 @@ function startCrop() {
   overlay.addEventListener('mousedown', onDown);
   overlay.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp, { once: true });
-  overlay.addEventListener('touchstart', onDown);
-  overlay.addEventListener('touchmove', onMove);
+  overlay.addEventListener('touchstart', onDown, { passive: false });
+  overlay.addEventListener('touchmove', onMove, { passive: false });
   window.addEventListener('touchend', onUp, { once: true });
 }
 
 function performCrop(x, y, w, h) {
-  const oc = new OffscreenCanvas(w, h);
+  x = Math.max(0, Math.floor(x));
+  y = Math.max(0, Math.floor(y));
+  w = Math.max(1, Math.round(w));
+  h = Math.max(1, Math.round(h));
+
+  const oc = createWorkCanvas(w, h);
   const octx = oc.getContext('2d');
   octx.drawImage(mainCanvas, x, y, w, h, 0, 0, w, h);
   
@@ -502,7 +606,7 @@ function addBorder() {
   const w = data.width, h = data.height;
   const borderSize = Math.max(20, Math.floor(w * 0.05));
   
-  const oc = new OffscreenCanvas(w + borderSize * 2, h + borderSize * 2);
+  const oc = createWorkCanvas(w + borderSize * 2, h + borderSize * 2);
   const octx = oc.getContext('2d');
   
   // White film border
@@ -514,7 +618,7 @@ function addBorder() {
   octx.lineWidth = 1;
   octx.strokeRect(borderSize - 1, borderSize - 1, w + 2, h + 2);
   
-  const src = new OffscreenCanvas(w, h);
+  const src = createWorkCanvas(w, h);
   src.getContext('2d').putImageData(data, 0, 0);
   octx.drawImage(src, borderSize, borderSize);
   
@@ -532,6 +636,12 @@ function addBorder() {
 function bindEvents() {
   $('btn-upload-empty')?.addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', e => { if (e.target.files[0]) loadImageFromFile(e.target.files[0]); });
+  cameraFileInput?.addEventListener('change', e => {
+    if (e.target.files[0]) {
+      loadImageFromFile(e.target.files[0]);
+      closeCamera();
+    }
+  });
   
   // Menu
   $('btn-menu')?.addEventListener('click', () => $('menu-modal').classList.remove('hidden'));
@@ -635,26 +745,72 @@ function switchPanel(panel) {
 
 let cameraStream = null, facingMode = 'environment';
 async function openCamera() {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    openCameraFileFallback();
+    return;
+  }
+
   $('camera-modal').classList.remove('hidden');
   try {
-    cameraStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false });
-    $('camera-video').srcObject = cameraStream;
-  } catch { showToast('Camera access denied'); $('camera-modal').classList.add('hidden'); }
+    cameraStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: { ideal: facingMode },
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+      },
+      audio: false,
+    });
+    const video = $('camera-video');
+    video.srcObject = cameraStream;
+    await video.play().catch(() => {});
+  } catch (err) {
+    console.warn('Camera unavailable', err);
+    closeCamera();
+    openCameraFileFallback('Use your device camera picker');
+  }
 }
 function closeCamera() {
   if (cameraStream) { cameraStream.getTracks().forEach(t => t.stop()); cameraStream = null; }
   $('camera-modal').classList.add('hidden');
 }
 function flipCamera() { facingMode = facingMode === 'environment' ? 'user' : 'environment'; closeCamera(); openCamera(); }
-function capturePhoto() {
+function openCameraFileFallback(message = 'Take or choose a photo') {
+  showToast(message);
+  if (cameraFileInput) {
+    cameraFileInput.value = '';
+    cameraFileInput.click();
+  } else {
+    fileInput.click();
+  }
+}
+async function capturePhoto() {
   const v = $('camera-video');
-  const oc = new OffscreenCanvas(v.videoWidth, v.videoHeight);
-  oc.getContext('2d').drawImage(v, 0, 0);
-  oc.convertToBlob({ type: 'image/jpeg', quality: 0.95 }).then(blob => {
+  if (!v.videoWidth || !v.videoHeight) {
+    showToast('Camera is still starting');
+    return;
+  }
+
+  try {
+    const oc = createWorkCanvas(v.videoWidth, v.videoHeight);
+    oc.getContext('2d').drawImage(v, 0, 0, v.videoWidth, v.videoHeight);
+    const blob = await canvasToBlob(oc, 'image/jpeg', 0.95);
     const img = new Image();
-    img.onload = () => { setState({ originalImage: img, imageLoaded: true }); initCanvas(img); closeCamera(); };
-    img.src = URL.createObjectURL(blob);
-  });
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      setState({ originalImage: img, imageLoaded: true });
+      initCanvas(img);
+      closeCamera();
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      showToast('Could not load captured photo');
+    };
+    img.src = url;
+  } catch (err) {
+    console.warn('Capture failed', err);
+    showToast('Could not capture photo');
+  }
 }
 
 function openExportModal() {
@@ -677,16 +833,7 @@ async function showSaveModal() {
   let w = orig.width, h = orig.height;
   const mm = { '4k':3840, '2k':2560, '1080':1920, '720':1280, '480':640 };
   if (res !== 'original' && mm[res]) { const r = Math.min(mm[res]/w, mm[res]/h); if (r<1) { w=Math.round(w*r); h=Math.round(h*r); } }
-  
-  const oc = document.createElement('canvas'); // Use real canvas for toDataURL
-  oc.width = w; oc.height = h;
-  const octx = oc.getContext('2d');
-  octx.drawImage(orig, 0, 0, w, h);
-  
-  // Re-apply destructive tools if any were used
-  // Note: For a fully professional app we'd track these, but for now we'll use the working base
-  // and scale the effects to the export resolution.
-  const workingBase = state.history[0]; 
+
   const exportOc = document.createElement('canvas');
   exportOc.width = w; exportOc.height = h;
   const eCtx = exportOc.getContext('2d');
@@ -702,21 +849,53 @@ async function showSaveModal() {
   data = applyEffects(data, fx, 100);
   eCtx.putImageData(data, 0, 0);
 
-  // Use DataURL for better iOS compatibility (avoids "no internet" blob error)
-  const dataUrl = exportOc.toDataURL(`image/${format}`, quality);
+  let outputBlob;
+  const requestedType = `image/${format}`;
+  try {
+    outputBlob = await canvasToBlob(exportOc, requestedType, quality);
+  } catch {
+    outputBlob = await canvasToBlob(exportOc, 'image/png');
+  }
+
+  const outputType = outputBlob.type || requestedType;
+  const extension = outputType === 'image/jpeg' ? 'jpg' : (outputType.split('/')[1] || format);
+  const filename = `retrolens_${Date.now()}.${extension}`;
+  const dataUrl = await blobToDataUrl(outputBlob);
+  const shareFile = typeof File === 'function' ? new File([outputBlob], filename, { type: outputType }) : null;
 
   const modal = $('save-modal');
   const imgPreview = $('save-preview');
+  const shareBtn = $('btn-share-save');
+  const instructions = $('save-instructions');
   imgPreview.src = dataUrl;
   modal.classList.remove('hidden');
 
-  if (!/iPhone|iPad|iPod|Android/i.test(navigator.userAgent)) {
+  const canShareFile = !!(shareFile && navigator.canShare?.({ files: [shareFile] }) && navigator.share);
+  if (shareBtn) {
+    shareBtn.style.display = canShareFile ? '' : 'none';
+    shareBtn.onclick = canShareFile ? async () => {
+      try {
+        await navigator.share({ files: [shareFile], title: 'RetroLens photo' });
+      } catch (err) {
+        if (err?.name !== 'AbortError') console.warn('Share failed', err);
+      }
+    } : null;
+  }
+  if (instructions) {
+    instructions.textContent = canShareFile
+      ? 'Use Share / Save for the native sheet, or long press the image below to save it to your photos.'
+      : 'Long press the image below to save it to your photos.';
+  }
+
+  if (!isMobileDevice()) {
     const link = document.createElement('a');
-    link.download = `retrolens_${Date.now()}.${format}`;
-    link.href = dataUrl;
+    const url = URL.createObjectURL(outputBlob);
+    link.download = filename;
+    link.href = url;
     link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   } else {
-    showToast('Long press image to save to Photos');
+    showToast(canShareFile ? 'Tap Share / Save or long press image' : 'Long press image to save to Photos');
   }
 }
 function showToast(msg) {

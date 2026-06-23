@@ -1,5 +1,72 @@
 // Effects engine - applies all pixel-level effects via Canvas 2D
-// Uses offscreen canvas for JPEG compression simulation
+
+function createWorkCanvas(width, height) {
+  const w = Math.max(1, Math.round(width));
+  const h = Math.max(1, Math.round(height));
+
+  if (typeof OffscreenCanvas === 'function') {
+    return new OffscreenCanvas(w, h);
+  }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  return canvas;
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [header, data] = dataUrl.split(',');
+  const mime = header.match(/:(.*?);/)?.[1] || 'image/png';
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return new Blob([bytes], { type: mime });
+}
+
+function canvasToBlob(canvas, type, quality) {
+  if (typeof canvas.convertToBlob === 'function') {
+    return canvas.convertToBlob({ type, quality });
+  }
+
+  if (typeof canvas.toBlob === 'function') {
+    return new Promise((resolve, reject) => {
+      canvas.toBlob(blob => {
+        if (blob) resolve(blob);
+        else reject(new Error('Canvas export failed'));
+      }, type, quality);
+    });
+  }
+
+  return Promise.resolve(dataUrlToBlob(canvas.toDataURL(type, quality)));
+}
+
+async function blobToDrawable(blob) {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      return await createImageBitmap(blob);
+    } catch {
+      // WebKit can expose createImageBitmap but fail for certain encoded blobs.
+    }
+  }
+
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    const url = URL.createObjectURL(blob);
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Image decode failed'));
+    };
+    image.src = url;
+  });
+}
 
 export function applyEffects(imageData, fx, intensity = 100) {
   const factor = intensity / 100;
@@ -66,11 +133,12 @@ export function applyEffects(imageData, fx, intensity = 100) {
 export async function applyJPEGCompression(canvas, quality, passes = 1) {
   let c = canvas;
   for (let i = 0; i < passes; i++) {
-    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', quality / 100));
-    const img = await createImageBitmap(blob);
-    const oc = new OffscreenCanvas(canvas.width, canvas.height);
+    const blob = await canvasToBlob(c, 'image/jpeg', quality / 100);
+    const img = await blobToDrawable(blob);
+    const oc = createWorkCanvas(canvas.width, canvas.height);
     const ctx = oc.getContext('2d');
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    img.close?.();
     c = oc;
   }
   const ctx = c.getContext('2d');
@@ -81,15 +149,54 @@ export async function applyJPEGCompression(canvas, quality, passes = 1) {
 export function applyBlur(imageData, radius) {
   if (radius <= 0) return imageData;
   const w = imageData.width, h = imageData.height;
-  const oc = new OffscreenCanvas(w, h);
+  const oc = createWorkCanvas(w, h);
   const ctx = oc.getContext('2d');
   ctx.putImageData(imageData, 0, 0);
   // Use canvas filter for blur
-  const oc2 = new OffscreenCanvas(w, h);
+  const oc2 = createWorkCanvas(w, h);
   const ctx2 = oc2.getContext('2d');
+  if (!('filter' in ctx2)) return applyBoxBlur(imageData, radius);
   ctx2.filter = `blur(${radius}px)`;
   ctx2.drawImage(oc, 0, 0);
   return ctx2.getImageData(0, 0, w, h);
+}
+
+function applyBoxBlur(imageData, radius) {
+  const w = imageData.width, h = imageData.height;
+  const r = Math.max(1, Math.min(8, Math.round(radius)));
+  const src = imageData.data;
+  const tmp = new Uint8ClampedArray(src.length);
+  const out = new Uint8ClampedArray(src.length);
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let red = 0, green = 0, blue = 0, alpha = 0, count = 0;
+      for (let dx = -r; dx <= r; dx++) {
+        const sx = Math.min(w - 1, Math.max(0, x + dx));
+        const i = (y * w + sx) * 4;
+        red += src[i]; green += src[i + 1]; blue += src[i + 2]; alpha += src[i + 3];
+        count++;
+      }
+      const o = (y * w + x) * 4;
+      tmp[o] = red / count; tmp[o + 1] = green / count; tmp[o + 2] = blue / count; tmp[o + 3] = alpha / count;
+    }
+  }
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let red = 0, green = 0, blue = 0, alpha = 0, count = 0;
+      for (let dy = -r; dy <= r; dy++) {
+        const sy = Math.min(h - 1, Math.max(0, y + dy));
+        const i = (sy * w + x) * 4;
+        red += tmp[i]; green += tmp[i + 1]; blue += tmp[i + 2]; alpha += tmp[i + 3];
+        count++;
+      }
+      const o = (y * w + x) * 4;
+      out[o] = red / count; out[o + 1] = green / count; out[o + 2] = blue / count; out[o + 3] = alpha / count;
+    }
+  }
+
+  return new ImageData(out, w, h);
 }
 
 // Sharpen using unsharp mask approximation
