@@ -1255,3 +1255,173 @@ function applyScratches(imageData, amount) {
   }
   return new ImageData(d, w, h);
 }
+
+// ===== Photoshop / Photopea style filters (used by customizable tool dialogs) =====
+const clampUnit = value => Math.min(1, Math.max(0, value));
+
+// Maps image luminance onto a shadow → (optional mid) → highlight gradient.
+export function applyGradientMap(imageData, shadowHex, highlightHex, midHex, intensity = 1) {
+  const s = clampUnit(intensity);
+  const c0 = parseHexColor(shadowHex || '#000000');
+  const c2 = parseHexColor(highlightHex || '#ffffff');
+  const c1 = midHex ? parseHexColor(midHex) : null;
+  const lut = new Float32Array(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255;
+    let r, g, b;
+    if (c1) {
+      if (t < 0.5) {
+        const u = t / 0.5;
+        r = mix(c0[0], c1[0], u); g = mix(c0[1], c1[1], u); b = mix(c0[2], c1[2], u);
+      } else {
+        const u = (t - 0.5) / 0.5;
+        r = mix(c1[0], c2[0], u); g = mix(c1[1], c2[1], u); b = mix(c1[2], c2[2], u);
+      }
+    } else {
+      r = mix(c0[0], c2[0], t); g = mix(c0[1], c2[1], t); b = mix(c0[2], c2[2], t);
+    }
+    lut[i * 3] = r; lut[i * 3 + 1] = g; lut[i * 3 + 2] = b;
+  }
+
+  const d = new Uint8ClampedArray(imageData.data);
+  for (let i = 0; i < d.length; i += 4) {
+    const l = Math.min(255, Math.max(0, Math.round(luminance(d, i))));
+    d[i] = mix(d[i], lut[l * 3], s);
+    d[i + 1] = mix(d[i + 1], lut[l * 3 + 1], s);
+    d[i + 2] = mix(d[i + 2], lut[l * 3 + 2], s);
+  }
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+// Emboss filter — accentuates edges along the top-left to bottom-right diagonal.
+export function applyEmboss(imageData, strength = 1) {
+  const w = imageData.width, h = imageData.height;
+  const src = imageData.data;
+  const out = new Uint8ClampedArray(src);
+  for (let i = 3; i < out.length; i += 4) out[i] = src[i];
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = (y * w + x) * 4;
+      const tl = ((y - 1) * w + (x - 1)) * 4;
+      const br = ((y + 1) * w + (x + 1)) * 4;
+      for (let c = 0; c < 3; c++) {
+        out[i + c] = clamp(128 + (src[br + c] - src[tl + c]) * strength);
+      }
+    }
+  }
+  return new ImageData(out, w, h);
+}
+
+// Sobel edge detection.
+export function applyEdgeDetect(imageData, strength = 1) {
+  const w = imageData.width, h = imageData.height;
+  const src = imageData.data;
+  const out = new Uint8ClampedArray(src.length);
+  const gray = new Float32Array(w * h);
+  for (let p = 0, j = 0; p < src.length; p += 4, j++) gray[j] = luminance(src, p);
+
+  for (let i = 3; i < out.length; i += 4) out[i] = 255;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const idx = y * w + x;
+      const gx = -gray[idx - w - 1] - 2 * gray[idx - 1] - gray[idx + w - 1]
+        + gray[idx - w + 1] + 2 * gray[idx + 1] + gray[idx + w + 1];
+      const gy = -gray[idx - w - 1] - 2 * gray[idx - w] - gray[idx - w + 1]
+        + gray[idx + w - 1] + 2 * gray[idx + w] + gray[idx + w + 1];
+      const mag = Math.min(255, Math.sqrt(gx * gx + gy * gy) * strength);
+      const o = idx * 4;
+      out[o] = out[o + 1] = out[o + 2] = mag;
+    }
+  }
+  return new ImageData(out, w, h);
+}
+
+// Classic sepia matrix with adjustable strength.
+export function applySepiaTone(imageData, intensity = 1) {
+  const s = clampUnit(intensity);
+  const d = new Uint8ClampedArray(imageData.data);
+  for (let i = 0; i < d.length; i += 4) {
+    const r = d[i], g = d[i + 1], b = d[i + 2];
+    d[i] = mix(r, r * 0.393 + g * 0.769 + b * 0.189, s);
+    d[i + 1] = mix(g, r * 0.349 + g * 0.686 + b * 0.168, s);
+    d[i + 2] = mix(b, r * 0.272 + g * 0.534 + b * 0.131, s);
+  }
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+// Global hue rotation / saturation / lightness shift (Photoshop Hue/Saturation).
+export function applyHueSaturation(imageData, hueDeg = 0, satPct = 0, lightPct = 0) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const satMul = 1 + satPct / 100;
+  const lAdd = lightPct / 100;
+  for (let i = 0; i < d.length; i += 4) {
+    let [h, s, l] = rgbToHsl(d[i], d[i + 1], d[i + 2]);
+    h = (h + hueDeg + 360) % 360;
+    s = clampUnit(s * satMul);
+    l = clampUnit(l + lAdd);
+    const [r, g, b] = hslToRgb(h, s, l);
+    d[i] = r; d[i + 1] = g; d[i + 2] = b;
+  }
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+// Black & white conversion with per-channel weighting (Photoshop B&W mixer).
+export function applyBlackAndWhite(imageData, weights = { r: 30, g: 59, b: 11 }, intensity = 1) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const s = clampUnit(intensity);
+  const wr = weights.r, wg = weights.g, wb = weights.b;
+  const sum = (wr + wg + wb) || 1;
+  for (let i = 0; i < d.length; i += 4) {
+    const gray = clamp((d[i] * wr + d[i + 1] * wg + d[i + 2] * wb) / sum);
+    d[i] = mix(d[i], gray, s);
+    d[i + 1] = mix(d[i + 1], gray, s);
+    d[i + 2] = mix(d[i + 2], gray, s);
+  }
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+// Add monochrome or colored noise (Photoshop Add Noise).
+export function applyAddNoise(imageData, amount, monochrome = true) {
+  const d = new Uint8ClampedArray(imageData.data);
+  const intensity = amount * 2.55;
+  for (let i = 0; i < d.length; i += 4) {
+    if (monochrome) {
+      const n = (Math.random() - 0.5) * intensity;
+      d[i] += n; d[i + 1] += n; d[i + 2] += n;
+    } else {
+      d[i] += (Math.random() - 0.5) * intensity;
+      d[i + 1] += (Math.random() - 0.5) * intensity;
+      d[i + 2] += (Math.random() - 0.5) * intensity;
+    }
+  }
+  return new ImageData(d, imageData.width, imageData.height);
+}
+
+// Solid color overlay with normal / multiply / screen / overlay blend modes.
+export function applyColorOverlay(imageData, hex, opacity = 50, mode = 'normal') {
+  const d = new Uint8ClampedArray(imageData.data);
+  const [cr, cg, cb] = parseHexColor(hex || '#ff9500');
+  const a = clampUnit(opacity / 100);
+  const blendOverlay = (base, blend) => base < 128
+    ? (2 * base * blend) / 255
+    : 255 - (2 * (255 - base) * (255 - blend)) / 255;
+
+  for (let i = 0; i < d.length; i += 4) {
+    let r, g, b;
+    if (mode === 'multiply') {
+      r = (d[i] * cr) / 255; g = (d[i + 1] * cg) / 255; b = (d[i + 2] * cb) / 255;
+    } else if (mode === 'screen') {
+      r = 255 - ((255 - d[i]) * (255 - cr)) / 255;
+      g = 255 - ((255 - d[i + 1]) * (255 - cg)) / 255;
+      b = 255 - ((255 - d[i + 2]) * (255 - cb)) / 255;
+    } else if (mode === 'overlay') {
+      r = blendOverlay(d[i], cr); g = blendOverlay(d[i + 1], cg); b = blendOverlay(d[i + 2], cb);
+    } else {
+      r = cr; g = cg; b = cb;
+    }
+    d[i] = mix(d[i], r, a);
+    d[i + 1] = mix(d[i + 1], g, a);
+    d[i + 2] = mix(d[i + 2], b, a);
+  }
+  return new ImageData(d, imageData.width, imageData.height);
+}
