@@ -92,7 +92,8 @@ async function blobToDrawable(blob) {
 export function applyEffects(imageData, fx, intensity = 100) {
   const factor = intensity / 100;
   // Use a consistent reference resolution (1200px) for spatial effects
-  const resScale = imageData.width / 1200;
+  const referenceWidth = fx.previewReferenceWidth || imageData.width;
+  const resScale = referenceWidth / 1200;
   const w = imageData.width, h = imageData.height;
   const data = new Uint8ClampedArray(imageData.data);
 

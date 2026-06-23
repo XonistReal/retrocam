@@ -21,7 +21,10 @@ const adjustSliders = $('adjust-sliders');
 const toolsGrid = $('tools-grid');
 const sidePanel = $('side-panel');
 
-const STOCK_IMAGE_URL = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=80&w=256&h=256&auto=format&fit=crop';
+const STOCK_IMAGE_URL = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?q=90&w=960&h=960&auto=format&fit=crop';
+const PRESET_PREVIEW_RENDER_SIZE = 512;
+const PRESET_PREVIEW_REFERENCE_WIDTH = 1200;
+const PRESET_PREVIEW_BATCH_SIZE = 6;
 const MOBILE_DEVICE_RE = /Android|iPhone|iPad|iPod/i;
 const isMobileDevice = () => MOBILE_DEVICE_RE.test(navigator.userAgent) || (navigator.maxTouchPoints > 1 && window.innerWidth < 1024);
 const STORAGE_KEYS = {
@@ -309,6 +312,7 @@ async function renderEffectsToImageData(sourceData, fx, canvas = createWorkCanva
 }
 
 let applyTimeout = null;
+let thumbnailRunId = 0;
 function scheduleApply() {
   clearTimeout(applyTimeout);
   applyTimeout = setTimeout(() => applyAll(), 50);
@@ -387,38 +391,57 @@ function renderPresets(list) {
   if (getState().imageLoaded || stockImage) generateThumbnails(list);
 }
 
-function generateThumbnails(list) {
+async function generateThumbnails(list) {
+  const runId = ++thumbnailRunId;
   const state = getState();
   const original = state.imageLoaded ? state.history[0] : stockImage;
   if (!original) return;
 
-  const thumbSize = 80;
+  const previewSize = PRESET_PREVIEW_RENDER_SIZE;
   let tw, th;
   
   if (state.imageLoaded) {
-    const ratio = Math.min(thumbSize / original.width, thumbSize / original.height);
+    const ratio = Math.min(previewSize / original.width, previewSize / original.height, 1);
     tw = Math.round(original.width * ratio);
     th = Math.round(original.height * ratio);
   } else {
-    tw = thumbSize; th = thumbSize;
+    tw = previewSize; th = previewSize;
   }
 
-  list.forEach(async preset => {
-    const card = presetGrid.querySelector(`[data-id="${preset.id}"]`);
-    if (!card) return;
-    try {
-      const smallData = downscaleImageData(original, tw, th);
-      const oc = createWorkCanvas(tw, th);
-      await renderEffectsToImageData(smallData, withPresetProfile(preset).fx, oc);
-      const blob = await canvasToBlob(oc, 'image/jpeg', 0.7);
-      const url = URL.createObjectURL(blob);
-      if (card.dataset.thumbUrl) URL.revokeObjectURL(card.dataset.thumbUrl);
-      card.dataset.thumbUrl = url;
-      card.style.backgroundImage = `url(${url})`;
-      card.style.backgroundSize = 'cover';
-      card.style.backgroundPosition = 'center';
-    } catch(e) { console.warn('Thumbnail err', e); }
-  });
+  const previewData = downscaleImageData(original, tw, th);
+  const referenceWidth = state.imageLoaded
+    ? Math.max(PRESET_PREVIEW_REFERENCE_WIDTH, original.width)
+    : PRESET_PREVIEW_REFERENCE_WIDTH;
+
+  for (let i = 0; i < list.length; i += PRESET_PREVIEW_BATCH_SIZE) {
+    if (runId !== thumbnailRunId) return;
+    const batch = list.slice(i, i + PRESET_PREVIEW_BATCH_SIZE);
+    await Promise.all(batch.map(preset => renderPresetThumbnail(preset, previewData, referenceWidth, runId)));
+    await new Promise(resolve => setTimeout(resolve, 0));
+  }
+}
+
+async function renderPresetThumbnail(preset, previewData, referenceWidth, runId) {
+  const card = presetGrid.querySelector(`[data-id="${preset.id}"]`);
+  if (!card || runId !== thumbnailRunId) return;
+  try {
+    const oc = createWorkCanvas(previewData.width, previewData.height);
+    const fx = {
+      ...withPresetProfile(preset).fx,
+      previewReferenceWidth: referenceWidth,
+    };
+    await renderEffectsToImageData(previewData, fx, oc);
+    if (runId !== thumbnailRunId) return;
+    const blob = await canvasToBlob(oc, 'image/jpeg', 0.88);
+    const url = URL.createObjectURL(blob);
+    if (card.dataset.thumbUrl) URL.revokeObjectURL(card.dataset.thumbUrl);
+    card.dataset.thumbUrl = url;
+    card.style.backgroundImage = `url(${url})`;
+    card.style.backgroundSize = 'cover';
+    card.style.backgroundPosition = 'center';
+  } catch(e) {
+    console.warn('Thumbnail err', e);
+  }
 }
 
 function downscaleImageData(source, tw, th) {
